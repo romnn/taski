@@ -1,0 +1,38 @@
+[package]
+name = "taski"
+version = "0.0.1"
+edition = "2021"
+
+[profile.release]
+lto = true
+
+[dependencies]
+# anyhow = "1.0"
+# regex = "1.5"
+# lazy_static = "1.4.0"
+async-trait = "0"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+futures-util = "0.3"
+rayon = "1.5"
+futures = "0.3"
+downcast-rs = "1"
+thiserror = "1"
+async-stream = "0.3"
+num_cpus = "1"
+
+[dev-dependencies]
+# approx = "0.5"
+async-process = "1.5"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.11", features = ["stream"] }
+tempfile = "3"
+# tempdir = "0.3"
+anyhow = "1"
+# lazy_static = "1"
+pretty_assertions = "1"
+# itertools = "0"
+criterion = "0.4"
+
+[features]
+default  = []
