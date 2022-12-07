@@ -1,6 +1,6 @@
 #![allow(warnings)]
 
-// use taski::*;
+use taski::*;
 use anyhow::Result;
 use async_process::Command;
 use futures::stream::StreamExt;
@@ -34,35 +34,60 @@ impl DebugTrace {
 }
 
 #[derive(Debug)]
-struct ExtractAudio {
+struct CombineAudio {
     // cannot hash a TempDir !!!
     tmp_dir: TempDir,
     // file: reqwest::Url,
 }
 
-impl ExtractAudio {
+impl CombineAudio {
     pub fn new() -> Result<Self> {
         let tmp_dir = TempDir::new()?;
         Ok(Self { tmp_dir })
     }
 }
 
-impl ExtractAudio {
-    pub async fn run(&mut self, input: impl AsRef<Path>) -> Result<PathBuf> {
+impl CombineAudio {
+    pub async fn run(
+        &mut self,
+        audio1: impl AsRef<Path>,
+        audio2: impl AsRef<Path>,
+    ) -> Result<PathBuf> {
         // "ffmpeg -i sample.avi -q:a 0 -map a sample.mp3"
+        // ffmpeg -i "concat:file1.mp3|file2.mp3" -acodec copy output.mp3
+        let audio1 = audio1.as_ref();
+        let audio2 = audio2.as_ref();
         let audio_file = self
             .tmp_dir
             .path()
-            .join(input.as_ref().file_name().unwrap())
+            .join(format!(
+                "{} + {}",
+                audio1
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .map(urlencoding::decode)
+                    .map(Result::ok)
+                    .flatten()
+                    .unwrap(),
+                audio2
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .map(urlencoding::decode)
+                    .map(Result::ok)
+                    .flatten()
+                    .unwrap(),
+            ))
             .with_extension("mp3");
         let output = Command::new("ffmpeg")
             .args([
                 "-i",
-                &input.as_ref().to_string_lossy(),
-                "-q:a",
-                "0",
-                "-map",
-                "a",
+                &format!("concat:{}|{}", &audio1.display(), &audio2.display()),
+                "-acodec",
+                "copy",
+                // "-q:a",
+                // "0",
+                // "-map",
+                // "a",
                 &audio_file.to_string_lossy(),
             ])
             .output()
@@ -92,7 +117,12 @@ impl Download {
     pub async fn run(&mut self) -> Result<PathBuf> {
         let client = reqwest::Client::new();
         let res = client.get(self.url.clone()).send().await?;
-        let path = self.tmp_dir.path().join("download");
+        let filename = self
+            .url
+            .path_segments()
+            .and_then(|s| s.last())
+            .unwrap_or("download");
+        let path = self.tmp_dir.path().join(filename);
         let mut file = tokio::fs::File::create(&path).await?;
         let mut stream = res.bytes_stream();
 
@@ -105,18 +135,31 @@ impl Download {
 
 // println!("{:?}", Dot::with_config(&graph, &[Config::EdgeNoLabel]));
 
+static INCOMPETECH: &str = "https://incompetech.com/music/royalty-free/mp3-royaltyfree";
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut extract = ExtractAudio::new()?;
-    let mut dl = Download::new("https://download.samplelib.com/mp4/sample-15s.mp4")?;
+//     let mut combine = CombineAudio::new()?;
+//     // let mut dl = Download::new("https://download.samplelib.com/mp4/sample-15s.mp4")?;
+//     let mut dl1 =
+//         Download::new(INCOMPETECH.to_owned() + "/I%20Got%20a%20Stick%20Arr%20Bryan%20Teoh.mp3")?;
 
-    // download file
-    let video_path = dl.run().await?;
-    dbg!(&video_path);
+//     let mut dl2 = Download::new(INCOMPETECH.to_owned() + "/The%20Ice%20Giants.mp3")?;
 
-    // extract audio
-    let audio_path = extract.run(video_path).await?;
-    dbg!(&audio_path);
+//     // download file
+//     let audio1_path = dl1.run().await?;
+//     dbg!(&audio1_path);
+
+//     let audio2_path = dl2.run().await?;
+//     dbg!(&audio2_path);
+
+//     // extract audio
+//     let audio_path = combine.run(audio1_path, audio2_path).await?;
+//     dbg!(&audio_path);
+
+//     // copy to example dir so we can test
+//     let output_path = PathBuf::from(file!()).with_extension("mp3");
+//     tokio::fs::copy(audio_path, output_path).await?;
 
     Ok(())
 }
@@ -126,12 +169,66 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
+    // #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // async fn test_temp_dir_hashing() -> Result<()> {
+    //     use std::hash::Hash;
+    //     let e1 = CombineAudio::new()?;
+    //     let e2 = CombineAudio::new()?;
+    //     assert_eq!((&e1).hash(), (&e2).hash());
+    //     Ok(())
+    // }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_temp_dir_hashing() -> Result<()> {
-        use std::hash::Hash;
-        let e1 = ExtractAudio::new()?;
-        let e2 = ExtractAudio::new()?;
-        assert_eq!((&e1).hash(), (&e2).hash());
+    async fn test_concurrent() -> Result<()> {
+        let mut combine = CombineAudio::new()?;
+        let mut dl1 = Download::new(
+            INCOMPETECH.to_owned() + "/I%20Got%20a%20Stick%20Arr%20Bryan%20Teoh.mp3",
+        )?;
+
+        let mut dl2 = Download::new(INCOMPETECH.to_owned() + "/The%20Ice%20Giants.mp3")?;
+
+        // download files
+        let audio1_path = dl1.run().await?;
+        dbg!(&audio1_path);
+
+        let audio2_path = dl2.run().await?;
+        dbg!(&audio2_path);
+
+        // combine audio files
+        let audio_path = combine.run(audio1_path, audio2_path).await?;
+        dbg!(&audio_path);
+
+        // copy to example dir so we can listen
+        let output_path = PathBuf::from(file!()).with_extension("mp3");
+        tokio::fs::copy(audio_path, output_path).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_serial() -> Result<()> {
+        let mut combine = CombineAudio::new()?;
+        let mut dl1 = Download::new(
+            INCOMPETECH.to_owned() + "/I%20Got%20a%20Stick%20Arr%20Bryan%20Teoh.mp3",
+        )?;
+
+        let mut dl2 = Download::new(INCOMPETECH.to_owned() + "/The%20Ice%20Giants.mp3")?;
+
+        // download files
+        let audio1_path = dl1.run().await?;
+        dbg!(&audio1_path);
+
+        let audio2_path = dl2.run().await?;
+        dbg!(&audio2_path);
+
+        // combine audio files
+        let audio_path = combine.run(audio1_path, audio2_path).await?;
+        dbg!(&audio_path);
+
+        // copy to example dir so we can listen
+        let output_path = PathBuf::from(file!()).with_extension("mp3");
+        tokio::fs::copy(audio_path, output_path).await?;
+
         Ok(())
     }
 }

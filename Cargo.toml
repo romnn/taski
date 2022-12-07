@@ -20,6 +20,7 @@ downcast-rs = "1"
 thiserror = "1"
 async-stream = "0.3"
 num_cpus = "1"
+by_address = "1"
 
 [dev-dependencies]
 # approx = "0.5"
@@ -33,6 +34,8 @@ anyhow = "1"
 pretty_assertions = "1"
 # itertools = "0"
 criterion = "0.4"
+urlencoding = "2"
+layout-rs = "0.1"
 
 [features]
 default  = []

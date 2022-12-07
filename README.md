@@ -10,6 +10,7 @@
         - use macros to expand for different traits
 
 ```bash
+cargo install cargo-expand
 cargo expand generic2
 ```
 
