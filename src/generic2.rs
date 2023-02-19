@@ -850,6 +850,7 @@ mod warp {
         use anyhow::Result;
         use async_trait::async_trait;
         use std::path::{Path, PathBuf};
+        use tokio::sync::Mutex;
 
         fn render_graph(scheduler: &Scheduler, path: impl AsRef<Path>) -> Result<()> {
             use layout::backends::svg::SVGWriter;
@@ -1124,64 +1125,64 @@ mod warp {
             // write the scheduler loop
 
             // let mut tasks: FuturesUnordered<Pin<Box<TaskFut>>> = FuturesUnordered::new();
-            let mut ready: Vec<Arc<Mutex<dyn Schedulable>>> = scheduler
-                .dependencies
-                // .iter()
-                .keys()
-                .filter(|t| t.ready())
-                .map(|t| t.0.clone())
-                // .cloned()
-                // .filter_map(|(t, deps)| {
-                //     if deps.is_empty() {
-                //         Some(t.0.clone())
-                //     } else {
-                //         None
-                //     }
-                // })
-                .collect();
-            dbg!(&ready);
-            // p.ready()).cloned().collect();
-            // let mut tasks: FuturesUnordered<askFut>>> = FuturesUnordered::new();
-            type TaskFut = dyn Future<Output = Result<Arc<dyn Schedulable>>>;
-            let mut tasks: FuturesUnordered<Pin<Box<TaskFut>>> = FuturesUnordered::new();
+            // let mut ready: Vec<Arc<Mutex<dyn Schedulable>>> = scheduler
+            //     .dependencies
+            //     // .iter()
+            //     .keys()
+            //     .filter(|t| t.ready())
+            //     .map(|t| t.0.clone())
+            //     // .cloned()
+            //     // .filter_map(|(t, deps)| {
+            //     //     if deps.is_empty() {
+            //     //         Some(t.0.clone())
+            //     //     } else {
+            //     //         None
+            //     //     }
+            //     // })
+            //     .collect();
+            // dbg!(&ready);
+            // // p.ready()).cloned().collect();
+            // // let mut tasks: FuturesUnordered<askFut>>> = FuturesUnordered::new();
+            // type TaskFut = dyn Future<Output = Result<Arc<dyn Schedulable>>>;
+            // let mut tasks: FuturesUnordered<Pin<Box<TaskFut>>> = FuturesUnordered::new();
 
-            loop {
-                // check if we are done
-                if tasks.is_empty() && ready.is_empty() {
-                    break;
-                }
+            // loop {
+            //     // check if we are done
+            //     if tasks.is_empty() && ready.is_empty() {
+            //         break;
+            //     }
 
-                // start running ready tasks
-                for p in ready.drain(0..) {
-                    tasks.push(Box::pin(async move {
-                        p.run().await;
-                        Ok(p)
-                    }));
-                }
+            //     // start running ready tasks
+            //     for p in ready.drain(0..) {
+            //         tasks.push(Box::pin(async move {
+            //             p.run().await;
+            //             Ok(p)
+            //         }));
+            //     }
 
-                // wait for a task to complete
-                match tasks.next().await {
-                    Some(Err(err)) => {
-                        anyhow::bail!("a task failed: {}", err)
-                    }
-                    Some(Ok(completed)) => {
-                        // update ready tasks
-                        let dependants = &scheduler.dependants[&ByThinAddress(completed)];
-                        ready.extend(
-                            // completed
-                            // .dependants
-                            dependants
-                                // .read()
-                                // .unwrap()
-                                // .values()
-                                .iter()
-                                .filter_map(|d| if d.ready() { Some(d.0.clone()) } else { None }), // && !d.published())
-                                                                                                   // .cloned(),
-                        );
-                    }
-                    None => {}
-                }
-            }
+            //     // wait for a task to complete
+            //     match tasks.next().await {
+            //         Some(Err(err)) => {
+            //             anyhow::bail!("a task failed: {}", err)
+            //         }
+            //         Some(Ok(completed)) => {
+            //             // update ready tasks
+            //             let dependants = &scheduler.dependants[&ByThinAddress(completed)];
+            //             ready.extend(
+            //                 // completed
+            //                 // .dependants
+            //                 dependants
+            //                     // .read()
+            //                     // .unwrap()
+            //                     // .values()
+            //                     .iter()
+            //                     .filter_map(|d| if d.ready() { Some(d.0.clone()) } else { None }), // && !d.published())
+            //                                                                                        // .cloned(),
+            //             );
+            //         }
+            //         None => {}
+            //     }
+            // }
             // let deps = Box::new((parent1.clone(), parent2.clone()))
             // find start nodes
             // let mut dependants: HashMap<TaskNode, HashSet<TaskNode>> = HashMap::new();
