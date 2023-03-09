@@ -1,21 +1,18 @@
 mod warp {
     use async_trait::async_trait;
     use by_address::ByThinAddress;
-    use futures::future::BoxFuture;
     use futures::stream::{FuturesUnordered, StreamExt};
     use std::collections::{HashMap, HashSet};
     use std::future::Future;
     use std::hash::{Hash, Hasher};
     use std::pin::Pin;
-    use std::sync::{Arc, Weak};
-    // use tokio::sync::RwLock;
     use std::sync::RwLock;
+    use std::sync::{Arc, Weak};
 
     #[derive(Debug)]
     pub struct Product<H, T: IntoTuple>(pub(crate) H, pub(crate) T);
 
     // Converts Product (and ()) into tuples.
-    // pub trait IntoTuple: Sized {
     pub trait IntoTuple {
         type Tuple: Tuple<Product = Self>;
 
@@ -84,136 +81,80 @@ mod warp {
     }
 
     #[derive(Debug)]
-    pub enum State<I, O>
-// , T>
-    // where
-    //     T: Task<I, O> + std::fmt::Debug,
-    {
+    pub enum State<I, O> {
         /// Task is pending and waiting to be run
         Pending(Box<dyn Task<I, O> + Send + Sync + 'static>),
-        // Pending(T),
         /// Task is running
         Running,
-        /// O could be a result type for fallible tasks,
-        /// but then how do we fail everything in
-        /// the dependency chain? this is a todo
-        Completed(O),
-        // todo: Succeeded(O), Failed(dyn Box<dyn Error>)
+        /// Task succeeded with the desired output
+        Succeeded(O),
+        /// Task failed with an error
+        Failed(Box<dyn std::error::Error + Send + Sync + 'static>),
     }
 
-    // call dependencies with arguments expanded
-    // todo: taskNode should be internal, add task and dependencies via arguments to add_node
-    // pub struct TaskNode<I, O, T>
-    pub struct TaskNode<I, O>
-// where
-    //     T: Task<I, O> + std::fmt::Debug,
-    {
-        // task: T,
+    /// A task node in the task graph.
+    ///
+    /// The task node tracks the state of the tasks lifecycle and is assigned a unique index.
+    /// It is not possible to directly construct a task node to enforce correctness.
+    /// References to TaskNode can be used as dependencies.
+    ///
+    /// TaskNodes are only generic (static) over the inputs and outputs, since that is of
+    /// importance for using a task node as a dependency for another task
+    pub struct TaskNode<I, O> {
         name: String,
         state: RwLock<State<I, O>>,
         dependencies: Box<dyn Dependencies<I> + Send + Sync>,
-        // output: Option<O>, // hidden from user
-        index: usize, // hidden from user
-                      // phantom: std::marker::PhantomData<I>,
+        index: usize,
     }
 
-    // impl<I, O, T> Hash for TaskNode<I, O, T>
-    impl<I, O> Hash for TaskNode<I, O>
-    // where
-    //     T: Task<I, O> + std::fmt::Debug,
-    {
+    impl<I, O> Hash for TaskNode<I, O> {
         fn hash<H: Hasher>(&self, state: &mut H) {
             // hash the index
             self.index.hash(state);
         }
     }
 
-    // impl<I, O, T> std::fmt::Debug for TaskNode<I, O, T>
     impl<I, O> std::fmt::Debug for TaskNode<I, O>
     where
         I: std::fmt::Debug,
         O: std::fmt::Debug,
-        // where
-        //     T: Task<I, O> + std::fmt::Debug,
     {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            // std::fmt::Debug::fmt(&self.task, f)
-            // write!(f, "TaskNode({:?})", self.task)
-            write!(
-                f,
-                "TaskNode#{}({}({:?}))",
-                self.index,
-                self.name,
-                self.state.read().unwrap()
-            )
+            f.debug_struct("TaskNode")
+                .field("id", &self.index)
+                .field("task", &self.name)
+                .field("state", &self.state.read().unwrap())
+                .finish()
         }
     }
 
+    /// A DAG graph of task nodes.
     #[derive(Default, Debug)]
     pub struct TaskGraph {
-        dependencies: HashMap<
-            Arc<dyn Schedulable>,
-            // ByThinAddress<Arc<dyn Schedulable>>,
-            // HashSet<ByThinAddress<Arc<dyn Schedulable>>>,
-            HashSet<Arc<dyn Schedulable>>,
-        >,
+        dependencies: HashMap<Arc<dyn Schedulable>, HashSet<Arc<dyn Schedulable>>>,
         dependants: HashMap<Arc<dyn Schedulable>, HashSet<Arc<dyn Schedulable>>>,
-        // dependencies: HashMap<
-        //     ByThinAddress<Arc<dyn Schedulable>>,
-        //     HashSet<ByThinAddress<Arc<dyn Schedulable>>>,
-        // >,
-        // dependants: HashMap<
-        //     ByThinAddress<Arc<dyn Schedulable>>,
-        //     HashSet<ByThinAddress<Arc<dyn Schedulable>>>,
-        // >,
     }
 
-    // #[derive(Default, Debug)]
-    // pub struct TaskRef<I, O> {
-    //     input: std::marker::PhantomData<I>,
-    //     output: std::marker::PhantomData<O>,
-    //     index: usize,
-    // }
-
-    // impl<I, O> Hash for TaskRef<I, O> {
-    //     fn hash<H: Hasher>(&self, state: &mut H) {
-    //         self.index.hash(state);
-    //     }
-    // }
-
     impl TaskGraph {
-        // pub fn add_node(&mut self, node: TaskNode) -> TaskRef {
-        // pub fn add_node(&mut self, node: impl Schedulable) -> String {
-        //     "test".into()
-        // }
-        // pub fn add_node<I, O, T>(&mut self, node: TaskNode<I, O, T>) -> TaskRef<I, O>
-
-        // todo: add_input which has no dependencies
-        // this should return a arc reference
-        // pub fn add_node<I, O, T>(
+        /// Add a new task to the graph.
+        ///
+        /// Dependencies for the task must be references to tasks that have already been added
+        /// to the task graph (Arc<TaskNode>)
         pub fn add_node<I, O, T>(
             &mut self,
             task: T,
             dependencies: Box<dyn Dependencies<I> + Send + Sync>,
         ) -> Arc<TaskNode<I, O>>
-        // ) -> Arc<TaskNode<I, O, T>>
-        // ) -> TaskRef<I, O>
         where
-            // T: Task<I, O> + std::fmt::Debug,
             T: Task<I, O> + Send + Sync + 'static,
-            // T: Task<I, O> + std::fmt::Debug + Send + Sync + 'static,
-            // T: Task<I, O> + std::fmt::Debug,
-            // I: Send + Sync,
-            // O: Send + Sync,
             I: std::fmt::Debug + Send + Sync + 'static,
+            // I: Send + Sync + 'static,
             O: std::fmt::Debug + Send + Sync + 'static,
+            // O: Send + Sync + 'static,
         {
             let node = Arc::new(TaskNode {
-                // output: None,
-                // task,
                 name: task.name(),
                 state: RwLock::new(State::Pending(Box::new(task))),
-                // phantom: std::marker::PhantomData,
                 dependencies,
                 index: self.dependencies.len(),
             });
@@ -222,9 +163,6 @@ mod warp {
             let mut seen: HashSet<Arc<dyn Schedulable>> = HashSet::new();
             let mut stack: Vec<Arc<dyn Schedulable>> = vec![node.clone()];
 
-            // let mut seen: HashSet<ByThinAddress<Arc<dyn Schedulable>>> = HashSet::new();
-            // let mut seen: HashSet<ByThinAddress<Arc<dyn Schedulable>>> = HashSet::new();
-            // let mut stack: Vec<ByThinAddress<Arc<dyn Schedulable>>> = vec![ByThinAddress(node_ref)];
             while let Some(node) = stack.pop() {
                 if !seen.insert(node.clone()) {
                     continue;
@@ -235,128 +173,65 @@ mod warp {
                     .or_insert(HashSet::new());
 
                 for dep in node.dependencies() {
-                    let mut dependants = self
-                        .dependants
-                        // .entry(ByThinAddress(dep.clone()))
-                        .entry(dep.clone())
-                        .or_insert(HashSet::new());
-                    // Arc::downgrade(&a)
-                    // dependants.insert(Arc::downgrade(&node));
+                    let mut dependants =
+                        self.dependants.entry(dep.clone()).or_insert(HashSet::new());
                     dependants.insert(node.clone());
                     dependencies.insert(dep.clone());
-                    // dependencies.insert(ByThinAddress(dep.clone()));
-                    // stack.push(ByThinAddress(dep));
-                    // dependencies are task nodes already, so they already have an index
                     stack.push(dep);
                 }
             }
 
-            // let mut dependencies = self
-            //     .dependencies
-            //     .entry(task.clone())
-            //     .or_insert(HashSet::new());
-
-            // self.dependencies
-            // create a task ref
-            // let node_idx = NodeIndex::new(self.nodes.len());
-            // NodeIndex::new(self.nodes.len());
-            // TaskRef {
-            //     input: std::marker::PhantomData,
-            //     output: std::marker::PhantomData,
-            //     index,
-            // }
             node
         }
     }
 
-    // #[derive(Default, Debug)]
-    // pub struct Scheduler {
-    //     dependencies: HashMap<
-    //         ByThinAddress<Arc<dyn Schedulable>>,
-    //         HashSet<ByThinAddress<Arc<dyn Schedulable>>>,
-    //     >,
-    //     dependants: HashMap<
-    //         ByThinAddress<Arc<dyn Schedulable>>,
-    //         HashSet<ByThinAddress<Arc<dyn Schedulable>>>,
-    //     >,
-    // }
-
-    // impl Scheduler {
-    //     // pub fn add_task(&mut self, task: impl TaskNode<I, O>) {
-    //     pub fn add_task<I, O, T>(&mut self, task: Arc<TaskNode<I, O, T>>)
-    //     where
-    //         T: Task<I, O> + std::fmt::Debug + Send + Sync + 'static,
-    //         I: std::fmt::Debug + Send + Sync + 'static,
-    //         O: std::fmt::Debug + Send + Sync + 'static,
-    //     {
-    //         // sanity check that partial eq works
-    //         assert_eq!(ByThinAddress(task.clone()), ByThinAddress(task.clone()));
-
-    //         // sanity check that hash works
-    //         use std::hash::Hash;
-    //         let hasher = std::collections::hash_map::DefaultHasher::new();
-    //         assert_eq!(
-    //             ByThinAddress(task.clone()).hash(&mut hasher.clone()),
-    //             ByThinAddress(task.clone()).hash(&mut hasher.clone())
-    //         );
-
-    //         // check for circles here
-    //         let mut seen: HashSet<ByThinAddress<Arc<dyn Schedulable>>> = HashSet::new();
-    //         let mut stack: Vec<ByThinAddress<Arc<dyn Schedulable>>> = vec![ByThinAddress(task)];
-    //         while let Some(task) = stack.pop() {
-    //             if !seen.insert(task.clone()) {
-    //                 continue;
-    //             }
-    //             let mut dependencies = self
-    //                 .dependencies
-    //                 .entry(task.clone())
-    //                 .or_insert(HashSet::new());
-
-    //             for dep in task.dependencies() {
-    //                 let mut dependants = self
-    //                     .dependants
-    //                     .entry(ByThinAddress(dep.clone()))
-    //                     .or_insert(HashSet::new());
-    //                 dependants.insert(task.clone());
-    //                 dependencies.insert(ByThinAddress(dep.clone()));
-    //                 stack.push(ByThinAddress(dep));
-    //             }
-    //         }
-    //     }
-    // }
-
-    // we cannot just keep using the TaskNode, because we need to often mix and match them and
-    // they all have different generic parameters
+    /// Trait representing a schedulable task node.
+    ///
+    /// TaskNodes implement this trait.
+    /// We cannot just use the TaskNode by itself, because we need to combine
+    /// task nodes with different generic parameters.
     #[async_trait]
     pub trait Schedulable {
-        /// is ready for execution
+        /// Indicates if the schedulable task is ready for execution.
+        ///
+        /// A task is ready if all its dependencies succeeded.
         fn ready(&self) -> bool;
 
-        /// task has completed
-        fn completed(&self) -> bool;
+        /// Indicates if the schedulable task has succeeded.
+        ///
+        /// A task is succeeded if its output is available.
+        fn succeeded(&self) -> bool;
 
-        /// index
+        /// Unique index of the task node in the DAG graph
         fn index(&self) -> usize;
 
-        /// run the task
+        /// Run the schedulable task using the dependencies' outputs as input.
+        ///
+        /// Running the task does not require a mutable borrow, since we
+        /// only swap out the internal state which is protected using interior mutability.
+        /// A schedulable task can only run exactly once, since the inner task
+        /// is consumed and only the output or error is kept.
+        ///
+        /// Note: The user must ensure that this is only called when
+        /// all dependencies have completed. (todo: change that)
         async fn run(&self);
-        // async fn run(&mut self);
 
-        // /// redirect format
-        // /// todo: this seems hacky, remove?
-        // fn debug(&self) -> &dyn std::fmt::Debug;
+        /// Returns the name of the schedulable task
+        fn name(&self) -> String;
+        // where
+        //     I: std::fmt::Debug,
+        //     O: std::fmt::Debug;
 
-        /// get the dependencies
+        /// Returns the dependencies of the schedulable task
         fn dependencies(&self) -> Vec<Arc<dyn Schedulable>>;
     }
 
     impl std::fmt::Debug for dyn Schedulable {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            std::fmt::Debug::fmt(self.debug(), f)
+            write!(f, "{}", self.name())
         }
     }
 
-    // impl Hash for dyn Schedulable + '_ {
     impl Hash for dyn Schedulable {
         #[inline]
         fn hash<H: Hasher>(&self, state: &mut H) {
@@ -364,7 +239,6 @@ mod warp {
         }
     }
 
-    // impl PartialEq for dyn Schedulable + '_ {
     impl PartialEq for dyn Schedulable {
         #[inline]
         fn eq(&self, other: &Self) -> bool {
@@ -373,73 +247,28 @@ mod warp {
     }
 
     impl Eq for dyn Schedulable {}
-    // impl Eq for dyn Schedulable + '_ {}
-
-    // task input should really just be a shorthand for a special task we define that is generic
-    // over the return type, so it can be indexed as well etc.
-    // #[async_trait]
-    // impl<O> Schedulable for TaskInput<O>
-    // where
-    //     O: Sync + Send + std::fmt::Debug,
-    // {
-    //     fn ready(&self) -> bool {
-    //         true
-    //     }
-
-    //     fn completed(&self) -> bool {
-    //         true
-    //     }
-
-    //     async fn run(&mut self) {
-    //         // do nothing
-    //     }
-
-    //     fn debug(&self) -> &dyn std::fmt::Debug {
-    //         self
-    //     }
-
-    //     fn dependencies(&self) -> Vec<Arc<dyn Schedulable>> {
-    //         vec![]
-    //     }
-    // }
-
-    impl<O> std::fmt::Debug for TaskInput<O>
-    where
-        O: std::fmt::Debug,
-    {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "TaskInput({:?})", &self.value)
-        }
-    }
 
     #[async_trait]
-    // impl<I, O, T> Schedulable for TaskNode<I, O, T>
     impl<I, O> Schedulable for TaskNode<I, O>
     where
-        // T: Task<I, O> + std::fmt::Debug + Send + Sync,
         I: std::fmt::Debug + Send + Sync,
         O: std::fmt::Debug + Send + Sync,
     {
-        /// a task is ready if its dependencies have completed
         fn ready(&self) -> bool {
-            self.dependencies().iter().all(|d| d.completed())
+            self.dependencies().iter().all(|d| d.succeeded())
         }
 
-        /// a task is completed if its output is available
-        fn completed(&self) -> bool {
+        fn succeeded(&self) -> bool {
             match *self.state.read().unwrap() {
-                State::Completed(_) => true,
+                State::Succeeded(_) => true,
                 _ => false,
             }
-            // self.output.is_some()
         }
 
-        /// index of the task node in the DAG graph
         fn index(&self) -> usize {
             self.index
         }
 
-        // async fn run(&mut self) {
         async fn run(&self) {
             // get the inputs from the dependencies
             let inputs = self.dependencies.inputs().unwrap();
@@ -453,23 +282,17 @@ mod warp {
                     return;
                 }
             };
-            // let output = pending.run(inputs).await;
-            // let state = std::mem::replace(&mut state, State::Running);
-            // match state {
-            if let State::Pending(mut task) = state {
+            if let State::Pending(task) = state {
+                // this will consume the task
                 let output = task.run(inputs).await;
                 let state = &mut *self.state.write().unwrap();
-                *state = State::Completed(output);
-                // std::mem::replace(state, State::Running)
+                *state = State::Succeeded(output);
             }
-            // _ => {}
-            // }
-            // self.output = Some();
         }
 
-        // fn debug(&self) -> &dyn std::fmt::Debug {
-        //     self
-        // }
+        fn name(&self) -> String {
+            format!("{:?}", self)
+        }
 
         fn dependencies(&self) -> Vec<Arc<dyn Schedulable>> {
             self.dependencies.to_vec()
@@ -477,34 +300,19 @@ mod warp {
     }
 
     pub trait Dependency<O>: Schedulable {
-        // fn output(&self) -> Option<&O>;
         fn output(&self) -> Option<O>;
     }
 
-    // impl<O> Dependency<O> for TaskInput<O>
-    // where
-    //     O: Sync + Send + std::fmt::Debug + 'static,
-    // {
-    //     fn output(&self) -> Option<&O> {
-    //         Some(&self.value)
-    //     }
-    // }
-
-    // impl<I, O, T> Dependency<O> for TaskNode<I, O, T>
     impl<I, O> Dependency<O> for TaskNode<I, O>
     where
-        // T: Task<I, O> + std::fmt::Debug + Send + Sync + 'static,
         I: std::fmt::Debug + Send + Sync + 'static,
         O: std::fmt::Debug + Clone + Send + Sync + 'static,
     {
-        // fn output(&self) -> Option<&O> {
         fn output(&self) -> Option<O> {
             match &*self.state.read().unwrap() {
-                // State::Completed(ref output) => Some(output),
-                State::Completed(output) => Some(output.clone()),
+                State::Succeeded(output) => Some(output.clone()),
                 _ => None,
             }
-            // self.output.as_ref()
         }
     }
 
@@ -543,7 +351,7 @@ mod warp {
         }
     }
 
-    // two dependencies etc.
+    // two dependencies
     impl<D1, D2, T1, T2> Dependencies<(T1, T2)> for (Arc<D1>, Arc<D2>)
     where
         D1: Dependency<T1> + 'static,
@@ -558,8 +366,6 @@ mod warp {
             ]
         }
 
-        // todo: arc clone the outputs? so we do not impose a clone bound on outputs (and inputs
-        // ...)
         fn inputs(&self) -> Option<(T1, T2)> {
             let (i1, i2) = self;
             match (i1.output(), i2.output()) {
@@ -571,57 +377,60 @@ mod warp {
 
     #[async_trait]
     pub trait Task<I, O>: std::fmt::Debug {
-        async fn run(&mut self, input: I) -> O;
+        /// Running a task consumes it, which does guarantee that tasks
+        /// may only run exactly once.
+        async fn run(self: Box<Self>, input: I) -> O;
 
+        /// The name of the task
+        /// todo: add debug bound here
         fn name(&self) -> String {
             format!("{:?}", self)
         }
     }
 
+    /// A simple terminal input for a task
+    #[derive(Clone)]
     pub struct TaskInput<O> {
         value: O,
     }
 
     impl<O> From<O> for TaskInput<O> {
+        #[inline]
         fn from(value: O) -> Self {
             Self { value }
         }
     }
 
+    /// Implements the Task trait for task inputs.
+    ///
+    /// All that this implementation does is return a shared reference to
+    /// the task input.
     #[async_trait]
     impl<O> Task<(), O> for TaskInput<O>
     where
-        O: std::fmt::Debug + Clone + Send,
+        O: std::fmt::Debug + Send,
     {
-        async fn run(&mut self, input: ()) -> O {
+        async fn run(self: Box<Self>, input: ()) -> O {
             println!("task input {:?}", &self.value);
-            self.value.clone()
+            self.value
         }
     }
 
-    // #[async_trait]
-    // pub trait TaskNew {
-    //     type Input;
-    //     type Output;
-
-    //     async fn run(&mut self, input: Self::Input) -> Self::Output;
-    // }
-
-    // #[async_trait]
-    // pub trait ManualTask1<T1, O> {
-    //     async fn run(&mut self, t1: T1) -> O;
-    // }
-
-    // #[async_trait]
-    // pub trait ManualTask2<T1, T2, O> {
-    //     async fn run(&mut self, t1: T1, t2: T2) -> O;
-    // }
+    impl<O> std::fmt::Debug for TaskInput<O>
+    where
+        O: std::fmt::Debug,
+    {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "TaskInput({:?})", &self.value)
+        }
+    }
 
     macro_rules! task {
         ($name:ident: $( $type:ident ),*) => {
             #[async_trait]
             pub trait $name<$( $type ),*, O>: std::fmt::Debug {
-                async fn run(&mut self, $($type: $type),*) -> O;
+                async fn run(self: Box<Self>, $($type: $type),*) -> O;
+
             }
             #[async_trait]
             impl<T, $( $type ),*, O> Task<($( $type ),*,), O> for T
@@ -629,7 +438,7 @@ mod warp {
                 T: $name<$( $type ),*, O> + Send + 'static,
                 $($type: std::fmt::Debug + Send + 'static),*
             {
-                async fn run(&mut self, input: ($( $type ),*,)) -> O {
+                async fn run(self: Box<Self>, input: ($( $type ),*,)) -> O {
                     // destructure to tuple and call
                     let ($( $type ),*,) = input;
                     $name::run(self, $( $type ),*).await
@@ -701,13 +510,6 @@ mod warp {
     };
 }
 
-    pub struct InFlightTaskFut<O>
-    where
-        Self: Future,
-    {
-        fut: Pin<Box<dyn Future<Output = O> + Send + Sync>>,
-    }
-
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -715,81 +517,6 @@ mod warp {
         use async_trait::async_trait;
         use std::path::{Path, PathBuf};
         use tokio::sync::Mutex;
-
-        // fn render_scheduler(scheduler: &Scheduler, path: impl AsRef<Path>) -> Result<()> {
-        //     use layout::backends::svg::SVGWriter;
-        //     use layout::core::{self, base::Orientation, color::Color, style};
-        //     use layout::gv::GraphBuilder;
-        //     use layout::std_shapes::shapes;
-        //     use layout::topo::layout::VisualGraph;
-        //     use std::io::{BufWriter, Write};
-
-        //     let mut graph = VisualGraph::new(Orientation::TopToBottom);
-
-        //     fn node(node: &ByThinAddress<Arc<dyn Schedulable>>) -> shapes::Element {
-        //         let node_style = style::StyleAttr {
-        //             line_color: Color::new(0x000000FF),
-        //             line_width: 2,
-        //             fill_color: Some(Color::new(0xB4B3B2FF)),
-        //             rounded: 0,
-        //             font_size: 15,
-        //         };
-        //         let size = core::geometry::Point { x: 100.0, y: 100.0 };
-        //         shapes::Element::create(
-        //             shapes::ShapeKind::Circle(format!("{:?}", node.0.debug())),
-        //             node_style.clone(),
-        //             Orientation::TopToBottom,
-        //             size,
-        //         )
-        //     }
-
-        //     let mut handles: HashMap<
-        //         ByThinAddress<Arc<dyn Schedulable>>,
-        //         layout::adt::dag::NodeHandle,
-        //     > = HashMap::new();
-        //     for (task, deps) in &scheduler.dependencies {
-        //         let dest_handle = *handles
-        //             .entry(task.clone())
-        //             .or_insert_with(|| graph.add_node(node(task)));
-        //         for dep in deps {
-        //             let src_handle = *handles
-        //                 .entry(dep.clone())
-        //                 .or_insert_with(|| graph.add_node(node(dep)));
-        //             let arrow = shapes::Arrow {
-        //                 start: shapes::LineEndKind::None,
-        //                 end: shapes::LineEndKind::Arrow,
-        //                 line_style: style::LineStyleKind::Normal,
-        //                 text: "".to_string(),
-        //                 look: style::StyleAttr {
-        //                     line_color: Color::new(0x000000FF),
-        //                     line_width: 2,
-        //                     fill_color: Some(Color::new(0xB4B3B2FF)),
-        //                     rounded: 0,
-        //                     font_size: 15,
-        //                 },
-        //                 src_port: None,
-        //                 dst_port: None,
-        //             };
-        //             graph.add_edge(arrow, src_handle, dest_handle);
-        //         }
-        //     }
-
-        //     let mut backend = SVGWriter::new();
-        //     let debug_mode = false;
-        //     let disable_opt = false;
-        //     let disable_layout = false;
-        //     graph.do_it(debug_mode, disable_opt, disable_layout, &mut backend);
-        //     let content = backend.finalize();
-
-        //     let file = std::fs::OpenOptions::new()
-        //         .write(true)
-        //         .truncate(true)
-        //         .create(true)
-        //         .open(path.as_ref())?;
-        //     let mut writer = BufWriter::new(file);
-        //     writer.write_all(content.as_bytes());
-        //     Ok(())
-        // }
 
         fn render_graph(task_graph: &TaskGraph, path: impl AsRef<Path>) -> Result<()> {
             use layout::backends::svg::SVGWriter;
@@ -801,7 +528,6 @@ mod warp {
 
             let mut graph = VisualGraph::new(Orientation::TopToBottom);
 
-            // fn node(node: &ByThinAddress<Arc<dyn Schedulable>>) -> shapes::Element {
             fn node(node: &Arc<dyn Schedulable>) -> shapes::Element {
                 let node_style = style::StyleAttr {
                     line_color: Color::new(0x000000FF),
@@ -812,19 +538,15 @@ mod warp {
                 };
                 let size = core::geometry::Point { x: 100.0, y: 100.0 };
                 shapes::Element::create(
-                    shapes::ShapeKind::Circle(format!("{:?}", node.debug())),
+                    shapes::ShapeKind::Circle(format!("{}", node.name())),
                     node_style.clone(),
                     Orientation::TopToBottom,
                     size,
                 )
             }
 
-            let mut handles: HashMap<
-                Arc<dyn Schedulable>,
-                // Arc<dyn Schedulable>,
-                // ByThinAddress<Arc<dyn Schedulable>>,
-                layout::adt::dag::NodeHandle,
-            > = HashMap::new();
+            let mut handles: HashMap<Arc<dyn Schedulable>, layout::adt::dag::NodeHandle> =
+                HashMap::new();
 
             for (task, deps) in &task_graph.dependencies {
                 let dest_handle = *handles
@@ -832,7 +554,6 @@ mod warp {
                     .or_insert_with(|| graph.add_node(node(task)));
                 for dep in deps {
                     let src_handle = *handles
-                        // .entry(Arc::downgrade(dep))
                         .entry(dep.clone())
                         .or_insert_with(|| graph.add_node(node(dep)));
                     let arrow = shapes::Arrow {
@@ -878,19 +599,27 @@ mod warp {
             struct Identity {}
 
             #[async_trait]
-            impl Task<(String,), String> for Identity {
-                async fn run(&mut self, input: (String,)) -> String {
+            impl Task1<String, String> for Identity {
+                async fn run(self: Box<Self>, input: String) -> String {
                     println!("identity with input: {:?}", input);
-                    input.0
+                    input
                 }
             }
+
+            // #[async_trait]
+            // impl Task<(String,), String> for Identity {
+            //     async fn run(self: Box<Self>, input: (String,)) -> String {
+            //         println!("identity with input: {:?}", input);
+            //         input.0
+            //     }
+            // }
 
             #[derive(Clone, Debug)]
             struct Combine {}
 
             #[async_trait]
             impl Task2<String, String, String> for Combine {
-                async fn run(&mut self, a: String, b: String) -> String {
+                async fn run(self: Box<Self>, a: String, b: String) -> String {
                     println!("combine with input: {:?}", (&a, &b));
                     // let (a, b) = input;
                     format!("{} {}", &a, &b)
@@ -901,14 +630,7 @@ mod warp {
             let mut identity = Identity {};
 
             let mut graph = TaskGraph::default();
-            // let mut base = graph.add_task(identity);
 
-            // make task nodes
-            // let mut base = Arc::new(TaskNode {
-            // the trait pendency<String>
-            // Dependency<String> for warp::TaskInput<String> ?
-            // if we allow the dependencies to not be added yet, we could end up with cirles etc.
-            // lets not do that?
             let mut input_node =
                 graph.add_node(TaskInput::from("George".to_string()), Box::new(()));
 
@@ -918,42 +640,6 @@ mod warp {
             let mut combine_node =
                 graph.add_node(combine.clone(), Box::new((parent1_node, parent2_node)));
             dbg!(&graph);
-
-            // let mut base_node = graph.add_node(TaskNode {
-            //     output: None,
-            //     task: identity.clone(),
-            //     phantom: std::marker::PhantomData,
-            //     dependencies: Box::new((Arc::new(TaskInput::from("George".to_string())),)),
-            // });
-
-            // let mut parent1 = Arc::new(TaskNode {
-            // let mut parent1_node = graph.add_node(identity.clone(), Box::new((base_node.clone(),)));
-            // let mut parent1_node = graph.add_node(TaskNode {
-            //     output: None,
-            //     task: identity.clone(),
-            //     phantom: std::marker::PhantomData,
-            //     dependencies: Box::new((base_node.clone(),)),
-            // });
-
-            // let mut parent2 = Arc::new(TaskNode {
-            //     output: None,
-            //     task: identity.clone(),
-            //     phantom: std::marker::PhantomData,
-            //     dependencies: Box::new((base.clone(),)),
-            // });
-
-            // let dependencies = Box::new((parent1.clone(), parent2.clone()));
-            // let mut combine = Arc::new(TaskNode {
-            //     output: None,
-            //     task: combine.clone(),
-            //     phantom: std::marker::PhantomData,
-            //     dependencies: dependencies.clone(),
-            // });
-
-            // let mut scheduler = Scheduler::default();
-            // scheduler.add_task(combine);
-
-            // dbg!(&scheduler);
 
             render_graph(
                 &graph,
@@ -967,25 +653,13 @@ mod warp {
             type TaskFut = dyn Future<Output = Result<Arc<dyn Schedulable>>>;
             let mut tasks: FuturesUnordered<Pin<Box<TaskFut>>> = FuturesUnordered::new();
 
-            // let mut ready: Vec<Arc<Mutex<dyn Schedulable>>> = graph
-            // let mut ready: Vec<&Arc<dyn Schedulable>> = graph
             let mut ready: Vec<Arc<dyn Schedulable>> = graph
                 .dependencies
-                // .iter()
                 .keys()
                 .filter(|t| t.ready())
-                // .map(|t| t.0.clone())
                 .cloned()
-                // .filter_map(|(t, deps)| {
-                //     if deps.is_empty() {
-                //         Some(t.0.clone())
-                //     } else {
-                //         None
-                //     }
-                // })
                 .collect();
             dbg!(&ready);
-            // // p.ready()).cloned().collect();
 
             loop {
                 // check if we are done
@@ -997,8 +671,6 @@ mod warp {
                 // start running ready tasks
                 for p in ready.drain(0..) {
                     tasks.push(Box::pin(async move {
-                        // let inputs = p.task.dependencies.inputs().unwrap();
-                        // let output = p.task.run(inputs).await;
                         println!("running {:?}", &p);
                         p.run().await;
                         Ok(p)
@@ -1014,12 +686,6 @@ mod warp {
                     Some(Ok(completed)) => {
                         println!("task completed {:?}", &completed);
 
-                        // update ready tasks
-                        // there was no reverse link set...
-                        // either handle that here or add empty set?
-
-                        // let empty = HashSet::new();
-                        // let dependants = &graph.dependants.get(&completed).unwrap_or(&empty); //(&vec![]);
                         if let Some(dependants) = &graph.dependants.get(&completed) {
                             println!("dependants: {:?}", &dependants);
                             ready.extend(dependants.iter().filter_map(|d| {
@@ -1033,7 +699,6 @@ mod warp {
                     }
                     None => {}
                 }
-                // break;
             }
 
             // check the graph now
@@ -1051,8 +716,8 @@ mod warp {
 
     generics! {
         T1,
-        T2
-        // T3,
+        T2,
+        T3
         // T4,
         // T5,
         // T6,

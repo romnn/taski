@@ -1,5 +1,16 @@
 ## djtool task scheduler
 
+#### Design decisions
+- task node is internal, because this is where the state is kept (interior mutability) and where the unique index is assigned to
+  - construction from the user not possible
+  - only possible to creatge using `add_task`
+  - only valid input as dependency (we know it was added (otherwise we do)) and we know it cannot have circles
+  - user cannot run any methods on it? wrong because of task trait
+- use a result type, to allow for fail fast strategies
+  - user workaround: use infallible and propagate an Option<O>
+- clone outputs as inputs, this is more efficient for small data such as i32
+  - for large data (or data that cannot be cloned), just return an Arc<O>
+
 #### TODO (generic3)
 - arc clone task outputs
 - implement fail fast by returning results with boxed? errors
