@@ -284,9 +284,13 @@ mod warp {
             };
             if let State::Pending(task) = state {
                 // this will consume the task
-                let output = task.run(inputs).await;
+                // let output = task.run(inputs).await;
+                let result = task.run(inputs).await;
                 let state = &mut *self.state.write().unwrap();
-                *state = State::Succeeded(output);
+                *state = match result {
+                    Ok(output) => State::Succeeded(output),
+                    Err(err) => State::Failed(err),
+                };
             }
         }
 
@@ -375,11 +379,13 @@ mod warp {
         }
     }
 
+    type TaskResult<O> = Result<O, Box<dyn std::error::Error + Send + Sync + 'static>>;
+
     #[async_trait]
     pub trait Task<I, O>: std::fmt::Debug {
         /// Running a task consumes it, which does guarantee that tasks
         /// may only run exactly once.
-        async fn run(self: Box<Self>, input: I) -> O;
+        async fn run(self: Box<Self>, input: I) -> TaskResult<O>;
 
         /// The name of the task
         /// todo: add debug bound here
@@ -410,9 +416,9 @@ mod warp {
     where
         O: std::fmt::Debug + Send,
     {
-        async fn run(self: Box<Self>, input: ()) -> O {
+        async fn run(self: Box<Self>, input: ()) -> TaskResult<O> {
             println!("task input {:?}", &self.value);
-            self.value
+            Ok(self.value)
         }
     }
 
@@ -429,7 +435,7 @@ mod warp {
         ($name:ident: $( $type:ident ),*) => {
             #[async_trait]
             pub trait $name<$( $type ),*, O>: std::fmt::Debug {
-                async fn run(self: Box<Self>, $($type: $type),*) -> O;
+                async fn run(self: Box<Self>, $($type: $type),*) -> TaskResult<O>;
 
             }
             #[async_trait]
@@ -438,7 +444,7 @@ mod warp {
                 T: $name<$( $type ),*, O> + Send + 'static,
                 $($type: std::fmt::Debug + Send + 'static),*
             {
-                async fn run(self: Box<Self>, input: ($( $type ),*,)) -> O {
+                async fn run(self: Box<Self>, input: ($( $type ),*,)) -> TaskResult<O> {
                     // destructure to tuple and call
                     let ($( $type ),*,) = input;
                     $name::run(self, $( $type ),*).await
@@ -600,9 +606,9 @@ mod warp {
 
             #[async_trait]
             impl Task1<String, String> for Identity {
-                async fn run(self: Box<Self>, input: String) -> String {
+                async fn run(self: Box<Self>, input: String) -> TaskResult<String> {
                     println!("identity with input: {:?}", input);
-                    input
+                    Ok(input)
                 }
             }
 
@@ -619,10 +625,10 @@ mod warp {
 
             #[async_trait]
             impl Task2<String, String, String> for Combine {
-                async fn run(self: Box<Self>, a: String, b: String) -> String {
+                async fn run(self: Box<Self>, a: String, b: String) -> TaskResult<String> {
                     println!("combine with input: {:?}", (&a, &b));
                     // let (a, b) = input;
-                    format!("{} {}", &a, &b)
+                    Ok(format!("{} {}", &a, &b))
                 }
             }
 
