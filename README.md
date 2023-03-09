@@ -1,5 +1,9 @@
 ## djtool task scheduler
 
+#### TODO (generic3)
+- arc clone task outputs
+- implement fail fast by returning results with boxed? errors
+
 #### Considerations
 - do we need products? why? can we get away with only tuples
     - i guess so, they allow single argument for use in traits where we would need a new trait for each number of args otherwise
