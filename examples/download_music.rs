@@ -1,6 +1,5 @@
 #![allow(warnings)]
 
-use taski::*;
 use anyhow::Result;
 use async_process::Command;
 use futures::stream::StreamExt;
@@ -8,6 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use taski::*;
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
@@ -66,15 +66,13 @@ impl CombineAudio {
                     .file_name()
                     .and_then(std::ffi::OsStr::to_str)
                     .map(urlencoding::decode)
-                    .map(Result::ok)
-                    .flatten()
+                    .and_then(Result::ok)
                     .unwrap(),
                 audio2
                     .file_name()
                     .and_then(std::ffi::OsStr::to_str)
                     .map(urlencoding::decode)
-                    .map(Result::ok)
-                    .flatten()
+                    .and_then(Result::ok)
                     .unwrap(),
             ))
             .with_extension("mp3");
@@ -109,7 +107,7 @@ impl Download {
     pub fn new(url: impl AsRef<str>) -> Result<Self> {
         let url = reqwest::Url::parse(url.as_ref())?;
         let tmp_dir = TempDir::new()?;
-        Ok(Self { url, tmp_dir })
+        Ok(Self { tmp_dir, url })
     }
 }
 
@@ -120,7 +118,7 @@ impl Download {
         let filename = self
             .url
             .path_segments()
-            .and_then(|s| s.last())
+            .and_then(std::iter::Iterator::last)
             .unwrap_or("download");
         let path = self.tmp_dir.path().join(filename);
         let mut file = tokio::fs::File::create(&path).await?;
@@ -139,27 +137,27 @@ static INCOMPETECH: &str = "https://incompetech.com/music/royalty-free/mp3-royal
 
 #[tokio::main]
 async fn main() -> Result<()> {
-//     let mut combine = CombineAudio::new()?;
-//     // let mut dl = Download::new("https://download.samplelib.com/mp4/sample-15s.mp4")?;
-//     let mut dl1 =
-//         Download::new(INCOMPETECH.to_owned() + "/I%20Got%20a%20Stick%20Arr%20Bryan%20Teoh.mp3")?;
+    //     let mut combine = CombineAudio::new()?;
+    //     // let mut dl = Download::new("https://download.samplelib.com/mp4/sample-15s.mp4")?;
+    //     let mut dl1 =
+    //         Download::new(INCOMPETECH.to_owned() + "/I%20Got%20a%20Stick%20Arr%20Bryan%20Teoh.mp3")?;
 
-//     let mut dl2 = Download::new(INCOMPETECH.to_owned() + "/The%20Ice%20Giants.mp3")?;
+    //     let mut dl2 = Download::new(INCOMPETECH.to_owned() + "/The%20Ice%20Giants.mp3")?;
 
-//     // download file
-//     let audio1_path = dl1.run().await?;
-//     dbg!(&audio1_path);
+    //     // download file
+    //     let audio1_path = dl1.run().await?;
+    //     dbg!(&audio1_path);
 
-//     let audio2_path = dl2.run().await?;
-//     dbg!(&audio2_path);
+    //     let audio2_path = dl2.run().await?;
+    //     dbg!(&audio2_path);
 
-//     // extract audio
-//     let audio_path = combine.run(audio1_path, audio2_path).await?;
-//     dbg!(&audio_path);
+    //     // extract audio
+    //     let audio_path = combine.run(audio1_path, audio2_path).await?;
+    //     dbg!(&audio_path);
 
-//     // copy to example dir so we can test
-//     let output_path = PathBuf::from(file!()).with_extension("mp3");
-//     tokio::fs::copy(audio_path, output_path).await?;
+    //     // copy to example dir so we can test
+    //     let output_path = PathBuf::from(file!()).with_extension("mp3");
+    //     tokio::fs::copy(audio_path, output_path).await?;
 
     Ok(())
 }
