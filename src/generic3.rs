@@ -1,10 +1,14 @@
+#![allow(warnings)]
+
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::RwLock;
+use std::time::Instant;
 
 #[derive(Debug)]
 pub struct Product<H, T: IntoTuple>(pub(crate) H, pub(crate) T);
@@ -77,6 +81,159 @@ impl Tuple for () {
     fn into_product(self) -> Self::Product {}
 }
 
+pub mod trace {
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::Instant;
+    use tokio::sync::Mutex;
+
+    #[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
+    pub struct TaskTrace {
+        pub label: String,
+        pub start: Option<Instant>,
+        pub end: Option<Instant>,
+    }
+
+    #[derive(Debug)]
+    pub struct ExecutionTrace<T> {
+        start_time: Instant,
+        pub tasks: Mutex<HashMap<T, TaskTrace>>,
+    }
+
+    impl<T> Default for ExecutionTrace<T>
+    where
+        T: std::hash::Hash + std::fmt::Display + Eq,
+    {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl<T> ExecutionTrace<T>
+    where
+        T: std::hash::Hash + std::fmt::Display + Eq,
+    {
+        pub fn new() -> Self {
+            Self {
+                start_time: Instant::now(),
+                tasks: Mutex::new(HashMap::new()),
+            }
+        }
+
+        // pub async fn get(&self, task: TaskRef) {
+        // pub async fn started(&self, task: TaskRef) {
+        //     self.start.lock().await.insert(task, Instant::now());
+        // }
+
+        // pub async fn ended(&self, task: TaskRef) {
+        //     self.end.lock().await.insert(task, Instant::now());
+        // }
+
+        pub async fn render(&self, path: impl AsRef<Path>) {
+            use plotters::coord::Shift;
+            use plotters::prelude::*;
+            use std::time::UNIX_EPOCH;
+
+            #[derive(Default, Debug, Clone)]
+            struct Bar<T> {
+                begin: i32,
+                length: i32,
+                label: String,
+                id: T,
+                color: RGBColor,
+            }
+
+            const BAR_HEIGHT: i32 = 18;
+            const BAR_WIDTH: i32 = 5;
+
+            let tasks = self.tasks.lock().await;
+
+            let mut bars: Vec<_> = tasks
+                .iter()
+                .filter_map(|(k, t)| match (t.start, t.end) {
+                    (Some(s), Some(e)) => {
+                        let begin: i32 = s
+                            .duration_since(self.start_time)
+                            .as_millis()
+                            .try_into()
+                            .unwrap();
+                        let end: i32 = e
+                            .duration_since(self.start_time)
+                            .as_millis()
+                            .try_into()
+                            .unwrap();
+                        Some(Bar {
+                            begin,
+                            length: end - begin,
+                            label: t.label.clone(),
+                            color: RGBColor(0, 0, 0),
+                            id: k,
+                        })
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            // assign colors to the tasks
+            use rand::{Rng, SeedableRng};
+            use rand_chacha::ChaCha8Rng;
+
+            let mut rng = ChaCha8Rng::seed_from_u64(0);
+            let colors = std::iter::repeat_with(|| RGBColor(rng.gen(), rng.gen(), rng.gen()));
+            let mut labels: Vec<String> = bars.iter().map(|b| &b.label).cloned().collect();
+            labels.sort();
+            dbg!(&labels);
+
+            for (mut bar, color) in bars.iter_mut().zip(colors) {
+                bar.color = color;
+            }
+            // let color_mapping: HashMap<_, _> = labels
+            //     .into_iter()
+            //     .zip(colors)
+            //     // .map(|(label, color)| (label, color))
+            //     .collect();
+
+            // compute the earliest start and latest end time for normalization
+            let earliest = bars.iter().map(|b| b.begin).min();
+            let latest = bars.iter().map(|b| b.begin + b.length).max();
+
+            let width = latest.unwrap_or(0) as u32 * BAR_WIDTH as u32 + 200;
+            let height = bars.len() as u32 * BAR_HEIGHT as u32 + 5;
+
+            let drawing_area = SVGBackend::new(path.as_ref(), (width, height)).into_drawing_area();
+            let text_style = TextStyle::from(("monospace", BAR_HEIGHT).into_font()).color(&BLACK);
+            for (i, bar) in bars.iter().enumerate() {
+                let i = i as i32;
+                let rect = [
+                    (BAR_WIDTH * bar.begin, BAR_HEIGHT * i),
+                    (
+                        BAR_WIDTH * (bar.begin + bar.length) + 2,
+                        BAR_HEIGHT * (i + 1),
+                    ),
+                ];
+                drawing_area
+                    .draw(&Rectangle::new(
+                        rect,
+                        ShapeStyle {
+                            color: bar.color.to_rgba(),
+                            filled: true,
+                            stroke_width: 0,
+                        },
+                    ))
+                    .unwrap();
+                drawing_area
+                    .draw_text(
+                        &format!("{}({})", bar.label, bar.id),
+                        &text_style,
+                        (BAR_WIDTH * bar.begin, BAR_HEIGHT * i),
+                    )
+                    .unwrap();
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum State<I, O> {
     /// Task is pending and waiting to be run
@@ -130,6 +287,7 @@ where
 pub struct TaskGraph {
     dependencies: HashMap<Arc<dyn Schedulable>, HashSet<Arc<dyn Schedulable>>>,
     dependants: HashMap<Arc<dyn Schedulable>, HashSet<Arc<dyn Schedulable>>>,
+    trace: Arc<trace::ExecutionTrace<usize>>,
 }
 
 impl TaskGraph {
@@ -137,20 +295,22 @@ impl TaskGraph {
     ///
     /// Dependencies for the task must be references to tasks that have already been added
     /// to the task graph (Arc<TaskNode>)
-    pub fn add_node<I, O, T>(
+    pub fn add_node<I, O, T, D>(
         &mut self,
         task: T,
-        dependencies: Box<dyn Dependencies<I> + Send + Sync>,
+        dependencies: D,
+        // dependencies: Box<dyn Dependencies<I> + Send + Sync>,
     ) -> Arc<TaskNode<I, O>>
     where
         T: Task<I, O> + Send + Sync + 'static,
+        D: Dependencies<I> + Send + Sync + 'static,
         I: std::fmt::Debug + Send + Sync + 'static,
         O: std::fmt::Debug + Send + Sync + 'static,
     {
         let node = Arc::new(TaskNode {
             name: task.name(),
             state: RwLock::new(State::Pending(Box::new(task))),
-            dependencies,
+            dependencies: Box::new(dependencies),
             index: self.dependencies.len(),
         });
 
@@ -203,9 +363,24 @@ impl TaskGraph {
 
             // start running ready tasks
             for p in ready.drain(0..) {
+                let trace = self.trace.clone();
                 tasks.push(Box::pin(async move {
                     println!("running {:?}", &p);
+                    trace.tasks.lock().await.insert(
+                        p.index(),
+                        trace::TaskTrace {
+                            label: p.name(),
+                            start: Some(Instant::now()),
+                            end: None,
+                        },
+                    );
                     p.run().await;
+                    trace
+                        .tasks
+                        .lock()
+                        .await
+                        .get_mut(&p.index())
+                        .map(|t| t.end = Some(Instant::now()));
                     p
                 }));
             }
@@ -227,6 +402,85 @@ impl TaskGraph {
                 }
             }
         }
+    }
+
+    pub async fn render_trace(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
+        self.trace.render(path.as_ref()).await;
+        Ok(())
+    }
+
+    pub fn render_to(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
+        use layout::backends::svg::SVGWriter;
+        use layout::core::{self, base::Orientation, color::Color, style};
+        use layout::std_shapes::shapes;
+        use layout::topo::layout::VisualGraph;
+        use std::io::{BufWriter, Write};
+
+        fn node(node: &Arc<dyn Schedulable>) -> shapes::Element {
+            let node_style = style::StyleAttr {
+                line_color: Color::new(0x0000_00FF),
+                line_width: 2,
+                fill_color: Some(Color::new(0xB4B3_B2FF)),
+                rounded: 0,
+                font_size: 15,
+            };
+            let size = core::geometry::Point { x: 100.0, y: 100.0 };
+            shapes::Element::create(
+                shapes::ShapeKind::Circle(node.name()),
+                node_style,
+                Orientation::TopToBottom,
+                size,
+            )
+        }
+
+        let mut graph = VisualGraph::new(Orientation::TopToBottom);
+
+        let mut handles: HashMap<Arc<dyn Schedulable>, layout::adt::dag::NodeHandle> =
+            HashMap::new();
+
+        for (task, deps) in &self.dependencies {
+            let dest_handle = *handles
+                .entry(task.clone())
+                .or_insert_with(|| graph.add_node(node(task)));
+            for dep in deps {
+                let src_handle = *handles
+                    .entry(dep.clone())
+                    .or_insert_with(|| graph.add_node(node(dep)));
+                let arrow = shapes::Arrow {
+                    start: shapes::LineEndKind::None,
+                    end: shapes::LineEndKind::Arrow,
+                    line_style: style::LineStyleKind::Normal,
+                    text: String::new(),
+                    look: style::StyleAttr {
+                        line_color: Color::new(0x0000_00FF),
+                        line_width: 2,
+                        fill_color: Some(Color::new(0xB4B3_B2FF)),
+                        rounded: 0,
+                        font_size: 15,
+                    },
+                    src_port: None,
+                    dst_port: None,
+                };
+                graph.add_edge(arrow, src_handle, dest_handle);
+            }
+        }
+
+        // https://docs.rs/layout-rs/latest/src/layout/backends/svg.rs.html#200
+        let mut backend = SVGWriter::new();
+        let debug_mode = false;
+        let disable_opt = false;
+        let disable_layout = false;
+        graph.do_it(debug_mode, disable_opt, disable_layout, &mut backend);
+        let content = backend.finalize();
+
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(path.as_ref())?;
+        let mut writer = BufWriter::new(file);
+        writer.write_all(content.as_bytes())?;
+        Ok(())
     }
 }
 
@@ -268,27 +522,49 @@ pub trait Schedulable {
     fn dependencies(&self) -> Vec<Arc<dyn Schedulable>>;
 }
 
-impl std::fmt::Debug for dyn Schedulable {
+impl std::fmt::Debug for dyn Schedulable + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
     }
 }
 
-impl Hash for dyn Schedulable {
+impl std::fmt::Debug for dyn Schedulable + Send + Sync + '_ {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+impl Hash for dyn Schedulable + '_ {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.index().hash(state);
     }
 }
 
-impl PartialEq for dyn Schedulable {
+impl Hash for dyn Schedulable + Send + Sync + '_ {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.index().hash(state);
+    }
+}
+
+impl PartialEq for dyn Schedulable + '_ {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         std::cmp::PartialEq::eq(&self.index(), &other.index())
     }
 }
 
-impl Eq for dyn Schedulable {}
+impl PartialEq for dyn Schedulable + Send + Sync + '_ {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        std::cmp::PartialEq::eq(&self.index(), &other.index())
+    }
+}
+
+impl Eq for dyn Schedulable + '_ {}
+
+impl Eq for dyn Schedulable + Send + Sync + '_ {}
 
 #[async_trait]
 impl<I, O> Schedulable for TaskNode<I, O>
@@ -417,7 +693,7 @@ where
     }
 }
 
-type TaskResult<O> = Result<O, Box<dyn std::error::Error + Send + Sync + 'static>>;
+pub type TaskResult<O> = Result<O, Box<dyn std::error::Error + Send + Sync + 'static>>;
 
 #[async_trait]
 pub trait Task<I, O>: std::fmt::Debug {
@@ -579,86 +855,13 @@ generics! {
     // T15,
     // T16
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use anyhow::Result;
     use async_trait::async_trait;
-    use std::path::{Path, PathBuf};
-
-    fn render_graph(task_graph: &TaskGraph, path: impl AsRef<Path>) -> Result<()> {
-        use layout::backends::svg::SVGWriter;
-        use layout::core::{self, base::Orientation, color::Color, style};
-        use layout::std_shapes::shapes;
-        use layout::topo::layout::VisualGraph;
-        use std::io::{BufWriter, Write};
-
-        fn node(node: &Arc<dyn Schedulable>) -> shapes::Element {
-            let node_style = style::StyleAttr {
-                line_color: Color::new(0x0000_00FF),
-                line_width: 2,
-                fill_color: Some(Color::new(0xB4B3_B2FF)),
-                rounded: 0,
-                font_size: 15,
-            };
-            let size = core::geometry::Point { x: 100.0, y: 100.0 };
-            shapes::Element::create(
-                shapes::ShapeKind::Circle(node.name()),
-                node_style,
-                Orientation::TopToBottom,
-                size,
-            )
-        }
-
-        let mut graph = VisualGraph::new(Orientation::TopToBottom);
-
-        let mut handles: HashMap<Arc<dyn Schedulable>, layout::adt::dag::NodeHandle> =
-            HashMap::new();
-
-        for (task, deps) in &task_graph.dependencies {
-            let dest_handle = *handles
-                .entry(task.clone())
-                .or_insert_with(|| graph.add_node(node(task)));
-            for dep in deps {
-                let src_handle = *handles
-                    .entry(dep.clone())
-                    .or_insert_with(|| graph.add_node(node(dep)));
-                let arrow = shapes::Arrow {
-                    start: shapes::LineEndKind::None,
-                    end: shapes::LineEndKind::Arrow,
-                    line_style: style::LineStyleKind::Normal,
-                    text: String::new(),
-                    look: style::StyleAttr {
-                        line_color: Color::new(0x0000_00FF),
-                        line_width: 2,
-                        fill_color: Some(Color::new(0xB4B3_B2FF)),
-                        rounded: 0,
-                        font_size: 15,
-                    },
-                    src_port: None,
-                    dst_port: None,
-                };
-                graph.add_edge(arrow, src_handle, dest_handle);
-            }
-        }
-
-        // https://docs.rs/layout-rs/latest/src/layout/backends/svg.rs.html#200
-        let mut backend = SVGWriter::new();
-        let debug_mode = false;
-        let disable_opt = false;
-        let disable_layout = false;
-        graph.do_it(debug_mode, disable_opt, disable_layout, &mut backend);
-        let content = backend.finalize();
-
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(path.as_ref())?;
-        let mut writer = BufWriter::new(file);
-        writer.write_all(content.as_bytes())?;
-        Ok(())
-    }
+    use std::path::PathBuf;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_scheduler() -> Result<()> {
@@ -697,12 +900,12 @@ mod tests {
 
         let mut graph = TaskGraph::default();
 
-        let input_node = graph.add_node(TaskInput::from("George".to_string()), Box::new(()));
+        let input_node = graph.add_node(TaskInput::from("George".to_string()), ());
 
-        let base_node = graph.add_node(identity.clone(), Box::new((input_node,)));
-        let parent1_node = graph.add_node(identity.clone(), Box::new((base_node.clone(),)));
-        let parent2_node = graph.add_node(identity.clone(), Box::new((base_node.clone(),)));
-        let result_node = graph.add_node(combine.clone(), Box::new((parent1_node, parent2_node)));
+        let base_node = graph.add_node(identity.clone(), (input_node,));
+        let parent1_node = graph.add_node(identity.clone(), (base_node.clone(),));
+        let parent2_node = graph.add_node(identity.clone(), (base_node.clone(),));
+        let result_node = graph.add_node(combine.clone(), (parent1_node, parent2_node));
         dbg!(&graph);
 
         render_graph(
