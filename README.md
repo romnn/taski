@@ -12,8 +12,15 @@
   - for large data (or data that cannot be cloned), just return an Arc<O>
 
 #### TODO (generic3)
-- arc clone task outputs
-- implement fail fast by returning results with boxed? errors
+- implement custom arbiter that can access labels of nodes
+- implement fail fast using some graph traversal magic 
+- add a builder for the scheduler
+- add a scheduler trait
+- add an executor that takes any scheduler
+
+#### DONE (generic3)
+- arc clone task outputs (we wont do that)
+- return results with boxed? errors
 
 #### Considerations
 - do we need products? why? can we get away with only tuples

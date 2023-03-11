@@ -19,13 +19,17 @@ static INCOMPETECH: &str = "https://incompetech.com/music/royalty-free/mp3-royal
 #[derive(Clone)]
 struct CombineAudio {
     tmp_dir: Arc<TempDir>,
-    // trace: Arc<DebugTrace>,
 }
 
 impl CombineAudio {
-    // pub fn new(tmp_dir: Arc<TempDir>, trace: Arc<DebugTrace>) -> Self {
     pub fn new(tmp_dir: Arc<TempDir>) -> Self {
         Self { tmp_dir }
+    }
+}
+
+impl std::fmt::Display for CombineAudio {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CombineAudio").finish()
     }
 }
 
@@ -72,8 +76,13 @@ impl taski::Task2<PathBuf, PathBuf, PathBuf> for CombineAudio {
 #[derive(Clone)]
 struct Download {
     tmp_dir: Arc<TempDir>,
-    // trace: Arc<DebugTrace>,
     client: reqwest::Client,
+}
+
+impl std::fmt::Display for Download {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Download").finish()
+    }
 }
 
 impl std::fmt::Debug for Download {
@@ -83,14 +92,9 @@ impl std::fmt::Debug for Download {
 }
 
 impl Download {
-    // pub fn new(tmp_dir: Arc<TempDir>, trace: Arc<DebugTrace>) -> Self {
     pub fn new(tmp_dir: Arc<TempDir>) -> Self {
         let client = reqwest::Client::new();
-        Self {
-            tmp_dir,
-            // trace,
-            client,
-        }
+        Self { tmp_dir, client }
     }
 }
 
@@ -137,10 +141,9 @@ fn with_stem(path: impl AsRef<Path>, func: impl FnOnce(&str) -> String) -> PathB
 async fn main() -> Result<()> {
     let start = Instant::now();
     let tmp_dir = Arc::new(TempDir::new()?);
-    // let trace = Arc::new(DebugTrace::default());
 
-    let download = Download::new(tmp_dir.clone()); // , trace.clone());
-    let combine = CombineAudio::new(tmp_dir.clone()); // , trace.clone());
+    let download = Download::new(tmp_dir.clone());
+    let combine = CombineAudio::new(tmp_dir.clone());
 
     let mut graph = taski::TaskGraph::default();
     let audio1_url = format!("{INCOMPETECH}/I%20Got%20a%20Stick%20Arr%20Bryan%20Teoh.mp3");
@@ -156,7 +159,8 @@ async fn main() -> Result<()> {
     dbg!(&graph);
 
     let source_file = PathBuf::from(file!());
-    let graph_file = with_stem(source_file.clone(), |stem| format!("{stem}_dag")).with_extension("svg");
+    let graph_file =
+        with_stem(source_file.clone(), |stem| format!("{stem}_dag")).with_extension("svg");
     graph.render_to(graph_file)?;
 
     // run all tasks
@@ -165,7 +169,8 @@ async fn main() -> Result<()> {
     dbg!(&graph);
 
     // render trace
-    let trace_file = with_stem(source_file.clone(), |stem| format!("{stem}_trace")).with_extension("svg");
+    let trace_file =
+        with_stem(source_file.clone(), |stem| format!("{stem}_trace")).with_extension("svg");
     graph.render_trace(trace_file).await;
 
     // // copy to example dir so we can test

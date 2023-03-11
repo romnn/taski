@@ -82,10 +82,15 @@ impl Tuple for () {
 }
 
 pub mod trace {
+    use plotters::coord::Shift;
+    use plotters::prelude::*;
+    use rand::{Rng, SeedableRng};
+    use rand_chacha::ChaCha8Rng;
     use std::collections::HashMap;
     use std::path::Path;
     use std::sync::Arc;
     use std::time::Instant;
+    use std::time::UNIX_EPOCH;
     use tokio::sync::Mutex;
 
     #[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
@@ -103,7 +108,7 @@ pub mod trace {
 
     impl<T> Default for ExecutionTrace<T>
     where
-        T: std::hash::Hash + std::fmt::Display + Eq,
+        T: std::hash::Hash + std::fmt::Display + std::fmt::Debug + std::cmp::Ord + Eq,
     {
         fn default() -> Self {
             Self::new()
@@ -112,7 +117,7 @@ pub mod trace {
 
     impl<T> ExecutionTrace<T>
     where
-        T: std::hash::Hash + std::fmt::Display + Eq,
+        T: std::hash::Hash + std::fmt::Display + std::fmt::Debug + std::cmp::Ord + Eq,
     {
         pub fn new() -> Self {
             Self {
@@ -131,10 +136,6 @@ pub mod trace {
         // }
 
         pub async fn render(&self, path: impl AsRef<Path>) {
-            use plotters::coord::Shift;
-            use plotters::prelude::*;
-            use std::time::UNIX_EPOCH;
-
             #[derive(Default, Debug, Clone)]
             struct Bar<T> {
                 begin: i32,
@@ -144,8 +145,8 @@ pub mod trace {
                 color: RGBColor,
             }
 
-            const BAR_HEIGHT: i32 = 18;
-            const BAR_WIDTH: i32 = 5;
+            const BAR_HEIGHT: i32 = 40;
+            const TARGET_WIDTH: u32 = 2000;
 
             let tasks = self.tasks.lock().await;
 
@@ -176,39 +177,48 @@ pub mod trace {
                 .collect();
 
             // assign colors to the tasks
-            use rand::{Rng, SeedableRng};
-            use rand_chacha::ChaCha8Rng;
-
             let mut rng = ChaCha8Rng::seed_from_u64(0);
-            let colors = std::iter::repeat_with(|| RGBColor(rng.gen(), rng.gen(), rng.gen()));
-            let mut labels: Vec<String> = bars.iter().map(|b| &b.label).cloned().collect();
-            labels.sort();
-            dbg!(&labels);
+            let colors = std::iter::repeat_with(|| {
+                use palette::IntoColor;
+                let hue = palette::RgbHue::from_degrees(rng.gen_range(0.0..360.0));
+                let hsv = palette::Hsv::new(hue, 1.0, 1.0);
+                let rgb: palette::rgb::Rgb = hsv.into_color();
+                RGBColor(
+                    (rgb.red * 255.0) as u8,
+                    (rgb.green * 255.0) as u8,
+                    (rgb.blue * 255.0) as u8,
+                )
+            });
+            bars.sort_by(|a, b| {
+                if a.begin == b.begin {
+                    a.id.cmp(&b.id)
+                } else {
+                    a.begin.cmp(&b.begin)
+                }
+            });
 
             for (mut bar, color) in bars.iter_mut().zip(colors) {
                 bar.color = color;
             }
-            // let color_mapping: HashMap<_, _> = labels
-            //     .into_iter()
-            //     .zip(colors)
-            //     // .map(|(label, color)| (label, color))
-            //     .collect();
+            // dbg!(&bars);
 
             // compute the earliest start and latest end time for normalization
             let earliest = bars.iter().map(|b| b.begin).min();
             let latest = bars.iter().map(|b| b.begin + b.length).max();
 
-            let width = latest.unwrap_or(0) as u32 * BAR_WIDTH as u32 + 200;
             let height = bars.len() as u32 * BAR_HEIGHT as u32 + 5;
+            let bar_width = (TARGET_WIDTH - 200) as f32 / latest.unwrap_or(0) as f32;
 
-            let drawing_area = SVGBackend::new(path.as_ref(), (width, height)).into_drawing_area();
-            let text_style = TextStyle::from(("monospace", BAR_HEIGHT).into_font()).color(&BLACK);
+            let size = (TARGET_WIDTH, height);
+            let drawing_area = SVGBackend::new(path.as_ref(), size).into_drawing_area();
+            let font = ("monospace", BAR_HEIGHT - 10).into_font();
+            let text_style = TextStyle::from(font).color(&BLACK);
             for (i, bar) in bars.iter().enumerate() {
                 let i = i as i32;
                 let rect = [
-                    (BAR_WIDTH * bar.begin, BAR_HEIGHT * i),
+                    ((bar_width * bar.begin as f32) as i32, BAR_HEIGHT * i),
                     (
-                        BAR_WIDTH * (bar.begin + bar.length) + 2,
+                        (bar_width * (bar.begin + bar.length) as f32 + 2.0) as i32,
                         BAR_HEIGHT * (i + 1),
                     ),
                 ];
@@ -224,9 +234,12 @@ pub mod trace {
                     .unwrap();
                 drawing_area
                     .draw_text(
-                        &format!("{}({})", bar.label, bar.id),
+                        &bar.label,
                         &text_style,
-                        (BAR_WIDTH * bar.begin, BAR_HEIGHT * i),
+                        (
+                            (bar_width * bar.begin as f32) as i32 + 1,
+                            BAR_HEIGHT * i + 5,
+                        ),
                     )
                     .unwrap();
             }
@@ -255,7 +268,8 @@ pub enum State<I, O> {
 /// `TaskNodes` are only generic (static) over the inputs and outputs, since that is of
 /// importance for using a task node as a dependency for another task
 pub struct TaskNode<I, O> {
-    name: String,
+    task_name: String,
+    short_task_name: String,
     state: RwLock<State<I, O>>,
     dependencies: Box<dyn Dependencies<I> + Send + Sync>,
     index: usize,
@@ -268,6 +282,12 @@ impl<I, O> Hash for TaskNode<I, O> {
     }
 }
 
+impl<I, O> std::fmt::Display for TaskNode<I, O> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.short_task_name)
+    }
+}
+
 impl<I, O> std::fmt::Debug for TaskNode<I, O>
 where
     I: std::fmt::Debug,
@@ -276,18 +296,28 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TaskNode")
             .field("id", &self.index)
-            .field("task", &self.name)
+            .field("task", &self.task_name)
             .field("state", &self.state.read().unwrap())
+            .field("dependencies", &self.dependencies)
             .finish()
     }
 }
 
 /// A DAG graph of task nodes.
-#[derive(Default, Debug)]
+#[derive(Default)]
 pub struct TaskGraph {
     dependencies: HashMap<Arc<dyn Schedulable>, HashSet<Arc<dyn Schedulable>>>,
     dependants: HashMap<Arc<dyn Schedulable>, HashSet<Arc<dyn Schedulable>>>,
     trace: Arc<trace::ExecutionTrace<usize>>,
+}
+
+impl std::fmt::Debug for TaskGraph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskGraph")
+            .field("dependencies", &self.dependencies)
+            .field("dependants", &self.dependants)
+            .finish()
+    }
 }
 
 impl TaskGraph {
@@ -295,20 +325,16 @@ impl TaskGraph {
     ///
     /// Dependencies for the task must be references to tasks that have already been added
     /// to the task graph (Arc<TaskNode>)
-    pub fn add_node<I, O, T, D>(
-        &mut self,
-        task: T,
-        dependencies: D,
-        // dependencies: Box<dyn Dependencies<I> + Send + Sync>,
-    ) -> Arc<TaskNode<I, O>>
+    pub fn add_node<I, O, T, D>(&mut self, task: T, dependencies: D) -> Arc<TaskNode<I, O>>
     where
-        T: Task<I, O> + Send + Sync + 'static,
+        T: Task<I, O> + std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
         D: Dependencies<I> + Send + Sync + 'static,
         I: std::fmt::Debug + Send + Sync + 'static,
         O: std::fmt::Debug + Send + Sync + 'static,
     {
         let node = Arc::new(TaskNode {
-            name: task.name(),
+            task_name: format!("{}", task),
+            short_task_name: format!("{:?}", task),
             state: RwLock::new(State::Pending(Box::new(task))),
             dependencies: Box::new(dependencies),
             index: self.dependencies.len(),
@@ -369,7 +395,7 @@ impl TaskGraph {
                     trace.tasks.lock().await.insert(
                         p.index(),
                         trace::TaskTrace {
-                            label: p.name(),
+                            label: format!("{}", p), // .name(),
                             start: Some(Instant::now()),
                             end: None,
                         },
@@ -426,7 +452,7 @@ impl TaskGraph {
             };
             let size = core::geometry::Point { x: 100.0, y: 100.0 };
             shapes::Element::create(
-                shapes::ShapeKind::Circle(node.name()),
+                shapes::ShapeKind::Circle(format!("{}", node)),
                 node_style,
                 Orientation::TopToBottom,
                 size,
@@ -515,8 +541,12 @@ pub trait Schedulable {
     /// all dependencies have completed. (todo: change that)
     async fn run(&self);
 
-    /// Returns the name of the schedulable task
+    // /// Returns the name of the schedulable task
     fn name(&self) -> String;
+
+    // /// Returns the name of the schedulable task
+    fn short_name(&self) -> String;
+    // fn task_name(&self) -> &dyn std::fmt::Debug + std::fmt::Display;
 
     /// Returns the dependencies of the schedulable task
     fn dependencies(&self) -> Vec<Arc<dyn Schedulable>>;
@@ -524,6 +554,7 @@ pub trait Schedulable {
 
 impl std::fmt::Debug for dyn Schedulable + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // write!(f, "{:?}", self.task)
         write!(f, "{}", self.name())
     }
 }
@@ -531,6 +562,23 @@ impl std::fmt::Debug for dyn Schedulable + '_ {
 impl std::fmt::Debug for dyn Schedulable + Send + Sync + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
+        // write!(f, "{:?}", self)
+    }
+}
+
+impl std::fmt::Display for dyn Schedulable + '_ {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.short_name())
+        // write!(f, "{}", self.name())
+        // write!(f, "{}", self)
+    }
+}
+
+impl std::fmt::Display for dyn Schedulable + Send + Sync + '_ {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.short_name())
+        // write!(f, "{}", self.name())
+        // write!(f, "{}", self)
     }
 }
 
@@ -609,7 +657,11 @@ where
     }
 
     fn name(&self) -> String {
-        format!("{self:?}")
+        self.task_name.clone()
+    }
+
+    fn short_name(&self) -> String {
+        self.short_task_name.clone()
     }
 
     fn dependencies(&self) -> Vec<Arc<dyn Schedulable>> {
@@ -693,6 +745,26 @@ where
     }
 }
 
+impl<O> std::fmt::Debug for dyn Dependencies<O> + '_ {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:?}",
+            self.to_vec().iter().map(|d| d.index()).collect::<Vec<_>>()
+        )
+    }
+}
+
+impl<O> std::fmt::Debug for dyn Dependencies<O> + Send + Sync + '_ {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:?}",
+            self.to_vec().iter().map(|d| d.index()).collect::<Vec<_>>()
+        )
+    }
+}
+
 pub type TaskResult<O> = Result<O, Box<dyn std::error::Error + Send + Sync + 'static>>;
 
 #[async_trait]
@@ -709,15 +781,13 @@ pub trait Task<I, O>: std::fmt::Debug {
 }
 
 /// A simple terminal input for a task
-#[derive(Clone)]
-pub struct TaskInput<O> {
-    value: O,
-}
+#[derive(Clone, Debug)]
+pub struct TaskInput<O>(O);
 
 impl<O> From<O> for TaskInput<O> {
     #[inline]
     fn from(value: O) -> Self {
-        Self { value }
+        Self(value)
     }
 }
 
@@ -731,17 +801,31 @@ where
     O: std::fmt::Debug + Send,
 {
     async fn run(self: Box<Self>, _input: ()) -> TaskResult<O> {
-        println!("task input {:?}", &self.value);
-        Ok(self.value)
+        println!("task input {:?}", &self.0);
+        Ok(self.0)
     }
 }
 
-impl<O> std::fmt::Debug for TaskInput<O>
+fn summarize(s: impl AsRef<str>, max_length: usize) -> String {
+    let s = s.as_ref();
+    if s.len() > max_length {
+        format!(
+            "{}...{}",
+            &s[..(max_length / 2)],
+            &s[s.len() - (max_length / 2)..s.len()]
+        )
+    } else {
+        s.to_string()
+    }
+}
+
+impl<O> std::fmt::Display for TaskInput<O>
 where
-    O: std::fmt::Debug,
+    O: std::fmt::Display,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TaskInput({:?})", &self.value)
+        let short_value = summarize(format!("{}", &self.0), 20);
+        f.debug_tuple("TaskInput").field(&short_value).finish()
     }
 }
 
@@ -918,6 +1002,7 @@ mod tests {
 
         // run all tasks
         graph.run().await;
+
         // debug the graph now
         dbg!(&graph);
 
