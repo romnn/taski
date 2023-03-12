@@ -93,32 +93,55 @@ pub mod trace {
     use std::time::UNIX_EPOCH;
     use tokio::sync::Mutex;
 
+    #[allow(clippy::cast_sign_loss)]
+    #[allow(clippy::cast_possible_truncation)]
+    #[inline]
+    fn hue_to_rgb(hue: palette::RgbHue) -> RGBColor {
+        use palette::IntoColor;
+        let hsv = palette::Hsv::new(hue, 1.0, 1.0);
+        let rgb: palette::rgb::Rgb = hsv.into_color();
+        RGBColor(
+            (rgb.red * 255.0) as u8,
+            (rgb.green * 255.0) as u8,
+            (rgb.blue * 255.0) as u8,
+        )
+    }
+
+    #[derive(thiserror::Error, Debug)]
+    pub enum RenderError {
+        #[error("the trace is too large to be rendered")]
+        TooLarge,
+    }
+
     #[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
-    pub struct TaskTrace {
+    pub struct Task {
         pub label: String,
         pub start: Option<Instant>,
         pub end: Option<Instant>,
     }
 
     #[derive(Debug)]
-    pub struct ExecutionTrace<T> {
+    pub struct Trace<T> {
         start_time: Instant,
-        pub tasks: Mutex<HashMap<T, TaskTrace>>,
+        pub tasks: Mutex<HashMap<T, Task>>,
     }
 
-    impl<T> Default for ExecutionTrace<T>
+    impl<T> Default for Trace<T>
     where
         T: std::hash::Hash + std::fmt::Display + std::fmt::Debug + std::cmp::Ord + Eq,
     {
+        #[inline]
         fn default() -> Self {
             Self::new()
         }
     }
 
-    impl<T> ExecutionTrace<T>
+    impl<T> Trace<T>
     where
         T: std::hash::Hash + std::fmt::Display + std::fmt::Debug + std::cmp::Ord + Eq,
     {
+        #[must_use]
+        #[inline]
         pub fn new() -> Self {
             Self {
                 start_time: Instant::now(),
@@ -126,20 +149,16 @@ pub mod trace {
             }
         }
 
-        // pub async fn get(&self, task: TaskRef) {
-        // pub async fn started(&self, task: TaskRef) {
-        //     self.start.lock().await.insert(task, Instant::now());
-        // }
-
-        // pub async fn ended(&self, task: TaskRef) {
-        //     self.end.lock().await.insert(task, Instant::now());
-        // }
-
-        pub async fn render(&self, path: impl AsRef<Path>) {
+        /// Render the trace as an SVG image.
+        ///
+        /// # Errors
+        /// If the trace is too large to be rendered.
+        #[allow(clippy::cast_possible_truncation)]
+        pub async fn render(&self, path: impl AsRef<Path>) -> Result<(), RenderError> {
             #[derive(Default, Debug, Clone)]
             struct Bar<T> {
-                begin: i32,
-                length: i32,
+                begin: u128,
+                length: u128,
                 label: String,
                 id: T,
                 color: RGBColor,
@@ -154,16 +173,12 @@ pub mod trace {
                 .iter()
                 .filter_map(|(k, t)| match (t.start, t.end) {
                     (Some(s), Some(e)) => {
-                        let begin: i32 = s
-                            .duration_since(self.start_time)
-                            .as_millis()
-                            .try_into()
-                            .unwrap();
-                        let end: i32 = e
-                            .duration_since(self.start_time)
-                            .as_millis()
-                            .try_into()
-                            .unwrap();
+                        let begin: u128 = s.duration_since(self.start_time).as_millis();
+                        // .try_into()
+                        // .unwrap();
+                        let end: u128 = e.duration_since(self.start_time).as_millis();
+                        // .try_into()
+                        // .unwrap();
                         Some(Bar {
                             begin,
                             length: end - begin,
@@ -179,19 +194,12 @@ pub mod trace {
             // assign colors to the tasks
             let mut rng = ChaCha8Rng::seed_from_u64(0);
             let colors = std::iter::repeat_with(|| {
-                use palette::IntoColor;
                 let hue = palette::RgbHue::from_degrees(rng.gen_range(0.0..360.0));
-                let hsv = palette::Hsv::new(hue, 1.0, 1.0);
-                let rgb: palette::rgb::Rgb = hsv.into_color();
-                RGBColor(
-                    (rgb.red * 255.0) as u8,
-                    (rgb.green * 255.0) as u8,
-                    (rgb.blue * 255.0) as u8,
-                )
+                hue_to_rgb(hue)
             });
             bars.sort_by(|a, b| {
                 if a.begin == b.begin {
-                    a.id.cmp(&b.id)
+                    a.id.cmp(b.id)
                 } else {
                     a.begin.cmp(&b.begin)
                 }
@@ -206,19 +214,21 @@ pub mod trace {
             let earliest = bars.iter().map(|b| b.begin).min();
             let latest = bars.iter().map(|b| b.begin + b.length).max();
 
-            let height = bars.len() as u32 * BAR_HEIGHT as u32 + 5;
-            let bar_width = (TARGET_WIDTH - 200) as f32 / latest.unwrap_or(0) as f32;
+            let height = u32::try_from(bars.len()).map_err(|_| RenderError::TooLarge)?
+                * u32::try_from(BAR_HEIGHT).map_err(|_| RenderError::TooLarge)?
+                + 5;
+            let bar_width = f64::from(TARGET_WIDTH - 200) / latest.unwrap_or(0) as f64;
 
             let size = (TARGET_WIDTH, height);
             let drawing_area = SVGBackend::new(path.as_ref(), size).into_drawing_area();
             let font = ("monospace", BAR_HEIGHT - 10).into_font();
             let text_style = TextStyle::from(font).color(&BLACK);
             for (i, bar) in bars.iter().enumerate() {
-                let i = i as i32;
+                let i = i32::try_from(i).unwrap();
                 let rect = [
-                    ((bar_width * bar.begin as f32) as i32, BAR_HEIGHT * i),
+                    ((bar_width * bar.begin as f64) as i32, BAR_HEIGHT * i),
                     (
-                        (bar_width * (bar.begin + bar.length) as f32 + 2.0) as i32,
+                        (bar_width * (bar.begin + bar.length) as f64) as i32 + 2,
                         BAR_HEIGHT * (i + 1),
                     ),
                 ];
@@ -237,12 +247,13 @@ pub mod trace {
                         &bar.label,
                         &text_style,
                         (
-                            (bar_width * bar.begin as f32) as i32 + 1,
+                            (bar_width * bar.begin as f64) as i32 + 1,
                             BAR_HEIGHT * i + 5,
                         ),
                     )
                     .unwrap();
             }
+            Ok(())
         }
     }
 }
@@ -308,7 +319,7 @@ where
 pub struct TaskGraph {
     dependencies: HashMap<Arc<dyn Schedulable>, HashSet<Arc<dyn Schedulable>>>,
     dependants: HashMap<Arc<dyn Schedulable>, HashSet<Arc<dyn Schedulable>>>,
-    trace: Arc<trace::ExecutionTrace<usize>>,
+    trace: Arc<trace::Trace<usize>>,
 }
 
 impl std::fmt::Debug for TaskGraph {
@@ -333,8 +344,8 @@ impl TaskGraph {
         O: std::fmt::Debug + Send + Sync + 'static,
     {
         let node = Arc::new(TaskNode {
-            task_name: format!("{}", task),
-            short_task_name: format!("{:?}", task),
+            task_name: format!("{task}"),
+            short_task_name: format!("{task:?}"),
             state: RwLock::new(State::Pending(Box::new(task))),
             dependencies: Box::new(dependencies),
             index: self.dependencies.len(),
@@ -394,19 +405,16 @@ impl TaskGraph {
                     println!("running {:?}", &p);
                     trace.tasks.lock().await.insert(
                         p.index(),
-                        trace::TaskTrace {
-                            label: format!("{}", p), // .name(),
+                        trace::Task {
+                            label: p.short_name(),
                             start: Some(Instant::now()),
                             end: None,
                         },
                     );
                     p.run().await;
-                    trace
-                        .tasks
-                        .lock()
-                        .await
-                        .get_mut(&p.index())
-                        .map(|t| t.end = Some(Instant::now()));
+                    if let Some(mut task) = trace.tasks.lock().await.get_mut(&p.index()) {
+                        task.end = Some(Instant::now());
+                    }
                     p
                 }));
             }
@@ -430,12 +438,20 @@ impl TaskGraph {
         }
     }
 
-    pub async fn render_trace(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
+    /// Render the execution trace as an svg image.
+    ///
+    /// # Errors
+    /// If writing to the specified output path fails.
+    pub async fn render_trace(&self, path: impl AsRef<Path>) -> Result<(), std::io::Error> {
         self.trace.render(path.as_ref()).await;
         Ok(())
     }
 
-    pub fn render_to(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
+    /// Render the task graph as an svg image.
+    ///
+    /// # Errors
+    /// If writing to the specified output path fails.
+    pub fn render_to(&self, path: impl AsRef<Path>) -> Result<(), std::io::Error> {
         use layout::backends::svg::SVGWriter;
         use layout::core::{self, base::Orientation, color::Color, style};
         use layout::std_shapes::shapes;
@@ -452,7 +468,7 @@ impl TaskGraph {
             };
             let size = core::geometry::Point { x: 100.0, y: 100.0 };
             shapes::Element::create(
-                shapes::ShapeKind::Circle(format!("{}", node)),
+                shapes::ShapeKind::Circle(format!("{node}")),
                 node_style,
                 Orientation::TopToBottom,
                 size,
@@ -541,12 +557,11 @@ pub trait Schedulable {
     /// all dependencies have completed. (todo: change that)
     async fn run(&self);
 
-    // /// Returns the name of the schedulable task
+    /// Returns the name of the schedulable task
     fn name(&self) -> String;
 
-    // /// Returns the name of the schedulable task
+    /// Returns the short name of the schedulable task
     fn short_name(&self) -> String;
-    // fn task_name(&self) -> &dyn std::fmt::Debug + std::fmt::Display;
 
     /// Returns the dependencies of the schedulable task
     fn dependencies(&self) -> Vec<Arc<dyn Schedulable>>;
@@ -554,7 +569,6 @@ pub trait Schedulable {
 
 impl std::fmt::Debug for dyn Schedulable + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // write!(f, "{:?}", self.task)
         write!(f, "{}", self.name())
     }
 }
@@ -562,23 +576,18 @@ impl std::fmt::Debug for dyn Schedulable + '_ {
 impl std::fmt::Debug for dyn Schedulable + Send + Sync + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
-        // write!(f, "{:?}", self)
     }
 }
 
 impl std::fmt::Display for dyn Schedulable + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.short_name())
-        // write!(f, "{}", self.name())
-        // write!(f, "{}", self)
     }
 }
 
 impl std::fmt::Display for dyn Schedulable + Send + Sync + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.short_name())
-        // write!(f, "{}", self.name())
-        // write!(f, "{}", self)
     }
 }
 
@@ -952,6 +961,12 @@ mod tests {
         #[derive(Clone, Debug)]
         struct Identity {}
 
+        impl std::fmt::Display for Identity {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{:?}", &self)
+            }
+        }
+
         #[async_trait]
         impl Task1<String, String> for Identity {
             async fn run(self: Box<Self>, input: String) -> TaskResult<String> {
@@ -970,6 +985,12 @@ mod tests {
 
         #[derive(Clone, Debug)]
         struct Combine {}
+
+        impl std::fmt::Display for Combine {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{:?}", &self)
+            }
+        }
 
         #[async_trait]
         impl Task2<String, String, String> for Combine {
@@ -992,8 +1013,7 @@ mod tests {
         let result_node = graph.add_node(combine.clone(), (parent1_node, parent2_node));
         dbg!(&graph);
 
-        render_graph(
-            &graph,
+        graph.render_to(
             PathBuf::from(file!())
                 .parent()
                 .unwrap()
