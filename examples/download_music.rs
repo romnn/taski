@@ -145,7 +145,7 @@ async fn main() -> Result<()> {
     let download = Download::new(tmp_dir.clone());
     let combine = CombineAudio::new(tmp_dir.clone());
 
-    let mut graph = taski::TaskGraph::default();
+    let mut graph = taski::Schedule::default();
     let audio1_url = format!("{INCOMPETECH}/I%20Got%20a%20Stick%20Arr%20Bryan%20Teoh.mp3");
     let audio2_url = format!("{INCOMPETECH}/The%20Ice%20Giants.mp3");
 

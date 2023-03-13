@@ -259,7 +259,7 @@ pub mod trace {
 }
 
 #[derive(Debug)]
-pub enum State<I, O> {
+enum State<I, O> {
     /// Task is pending and waiting to be run
     Pending(Box<dyn Task<I, O> + Send + Sync + 'static>),
     /// Task is running
@@ -267,7 +267,25 @@ pub enum State<I, O> {
     /// Task succeeded with the desired output
     Succeeded(O),
     /// Task failed with an error
-    Failed(Box<dyn std::error::Error + Send + Sync + 'static>),
+    Failed(Arc<dyn std::error::Error + Send + Sync + 'static>),
+}
+
+#[derive(Debug, Clone)]
+pub enum CompletionResult {
+    /// Task is pending
+    Pending,
+    /// Task is running
+    Running,
+    /// Task succeeded
+    Succeeded,
+    /// Task failed with an error
+    Failed(Arc<dyn std::error::Error + Send + Sync + 'static>),
+}
+
+#[derive(thiserror::Error, Debug, Clone, PartialEq)]
+pub enum TaskError {
+    #[error("task dependency failed")]
+    FailedDependency,
 }
 
 /// A task node in the task graph.
@@ -314,29 +332,148 @@ where
     }
 }
 
-/// A DAG graph of task nodes.
+pub mod policy {
+    use async_trait::async_trait;
+
+    // #[async_trait]
+    // pub trait Policy {
+    //     async fn arbitrate<I, C, O, E>(
+    //         &self,
+    //         tasks: &Tasks<I, C, O, E>,
+    //         scheduler: &Schedule<I>,
+    //     ) -> Option<I>;
+    //     // where
+    //     // I: Send + Sync + Eq + Hash + std::fmt::Debug + 'static,
+    //     // C: Send + Sync + 'static,
+    //     // O: Send + Sync + 'static,
+    //     // E: Send + Sync + std::fmt::Debug + 'static;
+    // }
+
+    // pub struct GreedyPolicy {
+    //     max_tasks: Option<usize>,
+    // }
+
+    // impl GreedyPolicy {
+    //     pub fn new() -> Self {
+    //         Self::default()
+    //     }
+
+    //     pub fn max_tasks(max_tasks: Option<usize>) -> Self {
+    //         Self { max_tasks }
+    //     }
+    // }
+
+    // impl Default for GreedyPolicy {
+    //     fn default() -> Self {
+    //         Self {
+    //             max_tasks: Some(num_cpus::get()),
+    //         }
+    //     }
+    // }
+}
+
+pub mod dfs {
+    #[allow(missing_debug_implementations)]
+    #[derive(Clone)]
+    pub struct Dfs<'a, N> {
+        stack: Vec<(usize, &'a N)>,
+        graph: &'a super::DAG<N>,
+        max_depth: Option<usize>,
+    }
+
+    impl<'a, N> Dfs<'a, N>
+    where
+        N: std::hash::Hash + Eq,
+    {
+        #[inline]
+        pub fn new(
+            graph: &'a super::DAG<N>,
+            root: &'a N,
+            max_depth: impl Into<Option<usize>>,
+        ) -> Self {
+            let mut stack = vec![];
+            if let Some(children) = graph.get(root) {
+                stack.extend(children.iter().map(|child| (1, child)));
+            }
+            Self {
+                stack,
+                graph,
+                max_depth: max_depth.into(),
+            }
+        }
+    }
+
+    impl<'a, N> Iterator for Dfs<'a, N>
+    where
+        N: std::hash::Hash + Eq,
+    {
+        type Item = (usize, &'a N);
+
+        #[inline]
+        fn next(&mut self) -> Option<Self::Item> {
+            match self.stack.pop() {
+                Some((depth, node)) => {
+                    if let Some(max_depth) = self.max_depth {
+                        if depth >= max_depth {
+                            return Some((depth, node));
+                        }
+                    }
+                    if let Some(children) = self.graph.get(&node) {
+                        self.stack
+                            .extend(children.iter().map(|child| (depth + 1, child)));
+                    };
+                    Some((depth, node))
+                }
+                None => None,
+            }
+        }
+    }
+}
+
+pub type DAG<N> = HashMap<N, HashSet<N>>;
+
+pub trait Traversal<N> {
+    fn traverse<'a, D>(&'a self, root: &'a N, depth: D) -> dfs::Dfs<'a, N>
+    where
+        N: std::hash::Hash + Eq,
+        D: Into<Option<usize>>;
+}
+
+impl<N> Traversal<N> for DAG<N> {
+    fn traverse<'a, D>(&'a self, root: &'a N, depth: D) -> dfs::Dfs<'a, N>
+    where
+        N: std::hash::Hash + Eq,
+        D: Into<Option<usize>>,
+    {
+        dfs::Dfs::new(self, root, depth.into())
+    }
+}
+
+pub type TaskRef = Arc<dyn Schedulable>;
+
+/// A task schedule based on a DAG of task nodes.
 #[derive(Default)]
-pub struct TaskGraph {
-    dependencies: HashMap<Arc<dyn Schedulable>, HashSet<Arc<dyn Schedulable>>>,
-    dependants: HashMap<Arc<dyn Schedulable>, HashSet<Arc<dyn Schedulable>>>,
+pub struct Schedule {
+    dependencies: DAG<TaskRef>,
+    dependants: DAG<TaskRef>,
     trace: Arc<trace::Trace<usize>>,
 }
 
-impl std::fmt::Debug for TaskGraph {
+impl std::fmt::Debug for Schedule {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TaskGraph")
+        f.debug_struct("Schedule")
             .field("dependencies", &self.dependencies)
             .field("dependants", &self.dependants)
             .finish()
     }
 }
 
-impl TaskGraph {
+impl Schedule {
     /// Add a new task to the graph.
     ///
-    /// Dependencies for the task must be references to tasks that have already been added
-    /// to the task graph (Arc<TaskNode>)
-    pub fn add_node<I, O, T, D>(&mut self, task: T, dependencies: D) -> Arc<TaskNode<I, O>>
+    /// Dependencies for the task must be references to tasks that have
+    /// already been added to the task graph (Arc<TaskNode>)
+    pub fn add_node<I, O, T, D>(&mut self, task: T, deps: D) -> Arc<TaskNode<I, O>>
     where
         T: Task<I, O> + std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
         D: Dependencies<I> + Send + Sync + 'static,
@@ -347,13 +484,13 @@ impl TaskGraph {
             task_name: format!("{task}"),
             short_task_name: format!("{task:?}"),
             state: RwLock::new(State::Pending(Box::new(task))),
-            dependencies: Box::new(dependencies),
+            dependencies: Box::new(deps),
             index: self.dependencies.len(),
         });
 
         // check for circles here
-        let mut seen: HashSet<Arc<dyn Schedulable>> = HashSet::new();
-        let mut stack: Vec<Arc<dyn Schedulable>> = vec![node.clone()];
+        let mut seen: HashSet<TaskRef> = HashSet::new();
+        let mut stack: Vec<TaskRef> = vec![node.clone()];
 
         while let Some(node) = stack.pop() {
             if !seen.insert(node.clone()) {
@@ -375,15 +512,57 @@ impl TaskGraph {
         node
     }
 
+    pub fn fail_dependants<'a>(&'a mut self, task: &'a TaskRef) {
+        let mut failed = vec![];
+        for (_, dependant) in self.rec_dependants(task) {
+            // fail all dependants
+            failed.push(dependant);
+            dependant.fail(Arc::new(TaskError::FailedDependency))
+        }
+        for task in failed {
+            // fail all dependencies
+            for (_, dep) in self.rec_dependencies(task) {
+            dependant.fail(Arc::new(TaskError::FailedDependency))
+        }
+        // let remove: Vec<(_, _)> = self.recursive_dependants(node).collect();
+        // for (_, dep) in remove {
+        //     self.dependants.remove(&dep);
+        //     self.deps.remove(&dep);
+        //     assert!(!self.ready.remove(&dep));
+        // }
+        // self.dependants.remove(&node);
+        // self.deps.remove(&node);
+    }
+
+    /// Iterator over the immediate dependencies of a task
+    pub fn dependencies<'a>(&'a self, task: &'a TaskRef) -> dfs::Dfs<'a, TaskRef> {
+        self.dependencies.traverse(task, Some(1))
+    }
+
+    /// Iterator over the immediate dependants of a task
+    pub fn dependants<'a>(&'a self, task: &'a TaskRef) -> dfs::Dfs<'a, TaskRef> {
+        self.dependants.traverse(task, Some(1))
+    }
+
+    /// Iterator over all recursive dependencies of a task
+    pub fn rec_dependencies<'a>(&'a self, task: &'a TaskRef) -> dfs::Dfs<'a, TaskRef> {
+        self.dependencies.traverse(task, None)
+    }
+
+    /// Iterator over all recursive dependants of a task
+    pub fn rec_dependants<'a>(&'a self, task: &'a TaskRef) -> dfs::Dfs<'a, TaskRef> {
+        self.dependants.traverse(task, None)
+    }
+
     /// Runs the tasks in the graph, consuming it (for now).
     pub async fn run(&mut self) {
         use futures::stream::FuturesUnordered;
         use std::future::Future;
 
-        type TaskFut = dyn Future<Output = Arc<dyn Schedulable>>;
+        type TaskFut = dyn Future<Output = TaskRef>;
         let mut tasks: FuturesUnordered<Pin<Box<TaskFut>>> = FuturesUnordered::new();
 
-        let mut ready: Vec<Arc<dyn Schedulable>> = self
+        let mut ready: Vec<TaskRef> = self
             .dependencies
             .keys()
             .filter(|t| t.ready())
@@ -422,10 +601,22 @@ impl TaskGraph {
             // wait for a task to complete
             if let Some(completed) = tasks.next().await {
                 // todo: check for output or error
-                println!("task completed {:?}", &completed);
+                println!("task {} completed: {:?}", &completed, completed.state());
+                match completed.state() {
+                    CompletionResult::Pending | CompletionResult::Running => {
+                        unreachable!("completed task state is invalid");
+                    }
+                    CompletionResult::Failed(err) => {
+                        // fail fast
+                        // check all dependants
+                    }
+                    CompletionResult::Succeeded => {}
+                }
+                // assert!(matches!(State::Pending(_), &completed));
 
                 if let Some(dependants) = &self.dependants.get(&completed) {
                     println!("dependants: {:?}", &dependants);
+                    // extend the ready queue
                     ready.extend(dependants.iter().filter_map(|d| {
                         if d.ready() {
                             Some(d.clone())
@@ -536,12 +727,20 @@ pub trait Schedulable {
     /// Indicates if the schedulable task is ready for execution.
     ///
     /// A task is ready if all its dependencies succeeded.
-    fn ready(&self) -> bool;
+    fn ready(&self) -> bool {
+        self.dependencies().iter().all(|d| d.succeeded())
+    }
 
     /// Indicates if the schedulable task has succeeded.
     ///
     /// A task is succeeded if its output is available.
     fn succeeded(&self) -> bool;
+
+    /// Fails the schedulable task.
+    fn fail(&self, err: Arc<dyn std::error::Error + Send + Sync + 'static>);
+
+    /// The result state of the task after completion.
+    fn state(&self) -> CompletionResult;
 
     /// Unique index of the task node in the DAG graph
     fn index(&self) -> usize;
@@ -629,12 +828,21 @@ where
     I: std::fmt::Debug + Send + Sync,
     O: std::fmt::Debug + Send + Sync,
 {
-    fn ready(&self) -> bool {
-        self.dependencies().iter().all(|d| d.succeeded())
-    }
-
     fn succeeded(&self) -> bool {
         matches!(*self.state.read().unwrap(), State::Succeeded(_))
+    }
+
+    fn fail(&self, err: Arc<dyn std::error::Error + Send + Sync + 'static>) {
+        *self.state.write().unwrap() = State::Failed(err);
+    }
+
+    fn state(&self) -> CompletionResult {
+        match &*self.state.read().unwrap() {
+            State::Pending(_) => CompletionResult::Pending,
+            State::Running => CompletionResult::Running,
+            State::Succeeded(_) => CompletionResult::Succeeded,
+            State::Failed(err) => CompletionResult::Failed(err.clone()),
+        }
     }
 
     fn index(&self) -> usize {
@@ -648,6 +856,7 @@ where
         let state = {
             let state = &mut *self.state.write().unwrap();
             if let State::Pending(_) = state {
+                // returns owned previous value (pending task)
                 std::mem::replace(state, State::Running)
             } else {
                 // already done
@@ -657,20 +866,25 @@ where
         if let State::Pending(task) = state {
             // this will consume the task
             let result = task.run(inputs).await;
+
+            // check if task was already marked as failed
             let state = &mut *self.state.write().unwrap();
+            if !matches!(state, State::Running) {
+                return;
+            }
             *state = match result {
                 Ok(output) => State::Succeeded(output),
-                Err(err) => State::Failed(err),
+                Err(err) => State::Failed(err.into()),
             };
         }
     }
 
     fn name(&self) -> String {
-        self.task_name.clone()
+        format!("{self:?}")
     }
 
     fn short_name(&self) -> String {
-        self.short_task_name.clone()
+        format!("{self}")
     }
 
     fn dependencies(&self) -> Vec<Arc<dyn Schedulable>> {
@@ -1003,7 +1217,7 @@ mod tests {
         let combine = Combine {};
         let identity = Identity {};
 
-        let mut graph = TaskGraph::default();
+        let mut graph = Schedule::default();
 
         let input_node = graph.add_node(TaskInput::from("George".to_string()), ());
 
