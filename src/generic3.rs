@@ -2,12 +2,13 @@
 
 use async_trait::async_trait;
 use futures::stream::StreamExt;
+use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::RwLock;
+use std::sync::{Arc, RwLockReadGuard};
 use std::time::Instant;
 
 #[derive(Debug)]
@@ -375,21 +376,25 @@ pub mod policy {
 pub mod dfs {
     #[allow(missing_debug_implementations)]
     #[derive(Clone)]
-    pub struct Dfs<'a, N> {
+    pub struct Dfs<'a, N, F> {
         stack: Vec<(usize, &'a N)>,
         graph: &'a super::DAG<N>,
         max_depth: Option<usize>,
+        filter: F,
     }
 
-    impl<'a, N> Dfs<'a, N>
+    impl<'a, N, F> Dfs<'a, N, F>
     where
         N: std::hash::Hash + Eq,
+        // F: Fn(&'a N) -> bool,
+        F: Fn(&&N) -> bool,
     {
         #[inline]
         pub fn new(
             graph: &'a super::DAG<N>,
             root: &'a N,
             max_depth: impl Into<Option<usize>>,
+            filter: F,
         ) -> Self {
             let mut stack = vec![];
             if let Some(children) = graph.get(root) {
@@ -399,13 +404,23 @@ pub mod dfs {
                 stack,
                 graph,
                 max_depth: max_depth.into(),
+                filter,
             }
         }
+
+        // this gives lifetime errors
+        // fn children(&self, node: &'a N) -> Option<impl Iterator<Item = &'a N> + '_> {
+        //     self.graph
+        //         .get(&node)
+        //         .map(|children| children.iter().filter(&self.filter))
+        // }
     }
 
-    impl<'a, N> Iterator for Dfs<'a, N>
+    impl<'a, N, F> Iterator for Dfs<'a, N, F>
     where
         N: std::hash::Hash + Eq,
+        F: Fn(&&N) -> bool,
+        // F: Fn(&'a N) -> bool,
     {
         type Item = (usize, &'a N);
 
@@ -419,8 +434,12 @@ pub mod dfs {
                         }
                     }
                     if let Some(children) = self.graph.get(&node) {
-                        self.stack
-                            .extend(children.iter().map(|child| (depth + 1, child)));
+                        self.stack.extend(
+                            children
+                                .iter()
+                                .filter(&self.filter)
+                                .map(|child| (depth + 1, child)),
+                        );
                     };
                     Some((depth, node))
                 }
@@ -430,22 +449,27 @@ pub mod dfs {
     }
 }
 
+// pub trait TaskFilterFunc: Fn(&&TaskRef) -> bool {}
+// pub type TaskFilterFunc = dyn Fn(&&TaskRef) -> bool;
+
 pub type DAG<N> = HashMap<N, HashSet<N>>;
 
 pub trait Traversal<N> {
-    fn traverse<'a, D>(&'a self, root: &'a N, depth: D) -> dfs::Dfs<'a, N>
+    fn traverse<'a, D, F>(&'a self, root: &'a N, depth: D, filter: F) -> dfs::Dfs<'a, N, F>
     where
+        F: Fn(&&N) -> bool,
         N: std::hash::Hash + Eq,
         D: Into<Option<usize>>;
 }
 
 impl<N> Traversal<N> for DAG<N> {
-    fn traverse<'a, D>(&'a self, root: &'a N, depth: D) -> dfs::Dfs<'a, N>
+    fn traverse<'a, D, F>(&'a self, root: &'a N, depth: D, filter: F) -> dfs::Dfs<'a, N, F>
     where
+        F: Fn(&&N) -> bool,
         N: std::hash::Hash + Eq,
         D: Into<Option<usize>>,
     {
-        dfs::Dfs::new(self, root, depth.into())
+        dfs::Dfs::new(self, root, depth.into(), filter)
     }
 }
 
@@ -457,6 +481,8 @@ pub struct Schedule {
     dependencies: DAG<TaskRef>,
     dependants: DAG<TaskRef>,
     trace: Arc<trace::Trace<usize>>,
+    running: Arc<RwLock<HashSet<TaskRef>>>,
+    ready: Vec<TaskRef>,
 }
 
 impl std::fmt::Debug for Schedule {
@@ -512,46 +538,90 @@ impl Schedule {
         node
     }
 
-    pub fn fail_dependants<'a>(&'a mut self, task: &'a TaskRef) {
-        let mut failed = vec![];
-        for (_, dependant) in self.rec_dependants(task) {
+    pub fn fail_dependants<'a>(&'a mut self, root: &'a TaskRef, dependencies: bool) {
+        let mut queue = vec![root];
+        let mut processed = HashSet::new();
+        processed.insert(root);
+
+        while let Some(task) = queue.pop() {
+            dbg!(&queue);
+            dbg!(&processed);
+
             // fail all dependants
-            failed.push(dependant);
-            dependant.fail(Arc::new(TaskError::FailedDependency))
+            let mut new_processed = vec![];
+            let dependants = self.dependants.traverse(task, None, |dep: &&TaskRef| {
+                matches!(dep.state(), CompletionResult::Pending) && !processed.contains(dep)
+            });
+            for (_, dependant) in dependants {
+                // todo: link to failed dependency
+                // if processed.insert(dependant) {
+                new_processed.push(dependant);
+                dependant.fail(Arc::new(TaskError::FailedDependency));
+                // processed.insert(dependant);
+                queue.push(dependant);
+                // }
+            }
+            // fail all dependencies of task
+            if dependencies {
+                // fail all dependencies
+                let dependencies = self.dependencies.traverse(task, None, |dep: &&TaskRef| {
+                    matches!(dep.state(), CompletionResult::Pending) && !processed.contains(task)
+                });
+                for (_, dependency) in dependencies {
+                    // fail dependency
+                    // if processed.insert(dependency) {
+                    dependency.fail(Arc::new(TaskError::FailedDependency));
+                    // processed.insert(dependency);
+                    queue.push(dependency);
+                    new_processed.push(dependency);
+                    // }
+                }
+            }
+
+            processed.extend(new_processed);
         }
-        for task in failed {
-            // fail all dependencies
-            for (_, dep) in self.rec_dependencies(task) {
-            dependant.fail(Arc::new(TaskError::FailedDependency))
-        }
-        // let remove: Vec<(_, _)> = self.recursive_dependants(node).collect();
-        // for (_, dep) in remove {
-        //     self.dependants.remove(&dep);
-        //     self.deps.remove(&dep);
-        //     assert!(!self.ready.remove(&dep));
-        // }
-        // self.dependants.remove(&node);
-        // self.deps.remove(&node);
     }
 
     /// Iterator over the immediate dependencies of a task
-    pub fn dependencies<'a>(&'a self, task: &'a TaskRef) -> dfs::Dfs<'a, TaskRef> {
-        self.dependencies.traverse(task, Some(1))
+    pub fn dependencies<'a>(
+        &'a self,
+        task: &'a TaskRef,
+    ) -> dfs::Dfs<'a, TaskRef, impl Fn(&&TaskRef) -> bool> {
+        self.dependencies.traverse(task, Some(1), |_| true)
     }
 
     /// Iterator over the immediate dependants of a task
-    pub fn dependants<'a>(&'a self, task: &'a TaskRef) -> dfs::Dfs<'a, TaskRef> {
-        self.dependants.traverse(task, Some(1))
+    pub fn dependants<'a>(
+        &'a self,
+        task: &'a TaskRef,
+    ) -> dfs::Dfs<'a, TaskRef, impl Fn(&&TaskRef) -> bool> {
+        self.dependants.traverse(task, Some(1), |_| true)
     }
 
     /// Iterator over all recursive dependencies of a task
-    pub fn rec_dependencies<'a>(&'a self, task: &'a TaskRef) -> dfs::Dfs<'a, TaskRef> {
-        self.dependencies.traverse(task, None)
+    pub fn rec_dependencies<'a>(
+        &'a self,
+        task: &'a TaskRef,
+    ) -> dfs::Dfs<'a, TaskRef, impl Fn(&&TaskRef) -> bool> {
+        self.dependencies.traverse(task, None, |_| true)
     }
 
     /// Iterator over all recursive dependants of a task
-    pub fn rec_dependants<'a>(&'a self, task: &'a TaskRef) -> dfs::Dfs<'a, TaskRef> {
-        self.dependants.traverse(task, None)
+    pub fn rec_dependants<'a>(
+        &'a self,
+        task: &'a TaskRef,
+    ) -> dfs::Dfs<'a, TaskRef, impl Fn(&&TaskRef) -> bool> {
+        self.dependants.traverse(task, None, |_| true)
+    }
+
+    /// Iterator over all running tasks
+    pub fn ready<'a>(&'a self) -> impl Iterator<Item = TaskRef> + '_ {
+        self.ready.iter().cloned()
+    }
+
+    /// Iterator over all running tasks
+    pub fn running<'a>(&'a self) -> RwLockReadGuard<HashSet<TaskRef>> {
+        self.running.read().unwrap()
     }
 
     /// Runs the tasks in the graph, consuming it (for now).
@@ -562,26 +632,32 @@ impl Schedule {
         type TaskFut = dyn Future<Output = TaskRef>;
         let mut tasks: FuturesUnordered<Pin<Box<TaskFut>>> = FuturesUnordered::new();
 
-        let mut ready: Vec<TaskRef> = self
+        // let mut ready: Vec<TaskRef> = self
+        self.ready = self
             .dependencies
             .keys()
             .filter(|t| t.ready())
             .cloned()
             .collect();
-        dbg!(&ready);
+        dbg!(&self.ready);
 
         loop {
             // check if we are done
-            if tasks.is_empty() && ready.is_empty() {
+            if tasks.is_empty() && self.ready.is_empty() {
                 println!("we are done");
                 break;
             }
 
             // start running ready tasks
-            for p in ready.drain(0..) {
+            while let Some(p) = arbitrate(self) {
+                self.ready.retain(|r| r != &p);
+                // for p in ready.drain(0..) {
                 let trace = self.trace.clone();
+                let running = self.running.clone();
                 tasks.push(Box::pin(async move {
                     println!("running {:?}", &p);
+
+                    running.write().unwrap().insert(p.clone());
                     trace.tasks.lock().await.insert(
                         p.index(),
                         trace::Task {
@@ -602,13 +678,14 @@ impl Schedule {
             if let Some(completed) = tasks.next().await {
                 // todo: check for output or error
                 println!("task {} completed: {:?}", &completed, completed.state());
+                self.running.write().unwrap().remove(&completed);
                 match completed.state() {
                     CompletionResult::Pending | CompletionResult::Running => {
                         unreachable!("completed task state is invalid");
                     }
                     CompletionResult::Failed(err) => {
                         // fail fast
-                        // check all dependants
+                        self.fail_dependants(&completed, true);
                     }
                     CompletionResult::Succeeded => {}
                 }
@@ -617,7 +694,7 @@ impl Schedule {
                 if let Some(dependants) = &self.dependants.get(&completed) {
                     println!("dependants: {:?}", &dependants);
                     // extend the ready queue
-                    ready.extend(dependants.iter().filter_map(|d| {
+                    self.ready.extend(dependants.iter().filter_map(|d| {
                         if d.ready() {
                             Some(d.clone())
                         } else {
@@ -757,6 +834,9 @@ pub trait Schedulable {
     async fn run(&self);
 
     /// Returns the name of the schedulable task
+    // fn as_any(&self) -> &dyn Any;
+
+    /// Returns the name of the schedulable task
     fn name(&self) -> String;
 
     /// Returns the short name of the schedulable task
@@ -825,8 +905,8 @@ impl Eq for dyn Schedulable + Send + Sync + '_ {}
 #[async_trait]
 impl<I, O> Schedulable for TaskNode<I, O>
 where
-    I: std::fmt::Debug + Send + Sync,
-    O: std::fmt::Debug + Send + Sync,
+    I: std::fmt::Debug + Send + Sync + 'static,
+    O: std::fmt::Debug + Send + Sync + 'static,
 {
     fn succeeded(&self) -> bool {
         matches!(*self.state.read().unwrap(), State::Succeeded(_))
@@ -864,6 +944,28 @@ where
             }
         };
         if let State::Pending(task) = state {
+            // before consuming, we should extract the labels
+            //
+            {
+                // let pls = task.as_ref();
+                let pls = task.as_any();
+
+                // let downcasted = pls.downcast_ref::<String>();
+                // let downcasted = pls.downcast_ref::<Box<dyn Label<TaskLabel>>>();
+                // let downcasted = pls.downcast_ref::<&dyn Label<TaskLabel>>();
+                let downcasted = pls.downcast_ref::<&dyn Label<TaskLabel>>();
+                eprintln!("downcasted: {:?}", &downcasted.map(|l| l.label()));
+                // eprintln!("downcasted: {:?}", &downcasted);
+                // .downcast_ref::<Box<dyn Label<TaskLabel> + '_>>()
+                // if let Some(t) = pls // .downcast_ref::<Box<dyn Label<TaskLabel> + '_>>()
+                //
+                // {
+                //     eprintln!("downcasted: {:?}", &t);
+                //     // dbg!(t);
+                //     // dbg!(t.label());
+                // }
+                // drop(pls);
+            }
             // this will consume the task
             let result = task.run(inputs).await;
 
@@ -878,6 +980,11 @@ where
             };
         }
     }
+
+    /// Returns the name of the schedulable task
+    // fn as_any(&self) -> &dyn Any {
+    //     self.task.as_any()
+    // }
 
     fn name(&self) -> String {
         format!("{self:?}")
@@ -996,11 +1103,26 @@ pub trait Task<I, O>: std::fmt::Debug {
     /// may only run exactly once.
     async fn run(self: Box<Self>, input: I) -> TaskResult<O>;
 
+    // fn as_any<'a>(&'a self) -> Box<dyn Any + '_> {
+    // fn as_any(&self) -> Box<dyn Any + '_> {
+    fn as_any(&self) -> &dyn Any;
+    // fn as_any(&self) -> &dyn Any where Self: Sized + 'static {
+    //     self
+    //     // Box::new(self)
+    //     // Box::new(self)
+    // }
+    // fn as_any(&self) -> &(dyn Any + '_);
+
     /// The name of the task
     /// todo: add debug bound here
     fn name(&self) -> String {
         format!("{self:?}")
     }
+}
+
+/// Task that is labeled.
+pub trait Label<L> {
+    fn label(&self) -> L;
 }
 
 /// A simple terminal input for a task
@@ -1021,12 +1143,19 @@ impl<O> From<O> for TaskInput<O> {
 #[async_trait]
 impl<O> Task<(), O> for TaskInput<O>
 where
-    O: std::fmt::Debug + Send,
+    O: std::fmt::Debug + Send + 'static,
 {
     async fn run(self: Box<Self>, _input: ()) -> TaskResult<O> {
-        println!("task input {:?}", &self.0);
         Ok(self.0)
     }
+
+    // fn as_any(self: &Box<Self>) -> Box<dyn Any> {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    //     Box::new(self)
+    // }
 }
 
 fn summarize(s: impl AsRef<str>, max_length: usize) -> String {
@@ -1059,7 +1188,13 @@ macro_rules! task {
             pub trait $name<$( $type ),*, O>: std::fmt::Debug {
                 async fn run(self: Box<Self>, $($type: $type),*) -> TaskResult<O>;
 
+                // fn as_any(&self) -> &(dyn Any + '_) {
+                fn as_any(&self) -> &dyn Any;
+                // {
+                //     self
+                // }
             }
+
             #[allow(non_snake_case)]
             #[async_trait]
             impl<T, $( $type ),*, O> Task<($( $type ),*,), O> for T
@@ -1071,6 +1206,11 @@ macro_rules! task {
                     // destructure to tuple and call
                     let ($( $type ),*,) = input;
                     $name::run(self, $( $type ),*).await
+                }
+
+                // fn as_any(&self) -> &(dyn Any + '_) {
+                fn as_any(&self) -> &dyn Any {
+                    self
                 }
             }
         }
@@ -1163,6 +1303,29 @@ generics! {
     // T16
 }
 
+pub fn arbitrate(schedule: &mut Schedule) -> Option<TaskRef> {
+    // count some labels
+    let num_downloads = schedule
+        .running()
+        .iter()
+        .filter(|t| {
+            // let label = t.as_any().downcast_ref();
+            // match t.label() {
+            //
+            // }
+            false
+        })
+        .count();
+    dbg!(num_downloads);
+    schedule.ready().next()
+}
+
+#[derive(Debug)]
+enum TaskLabel {
+    Identity,
+    Combine,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1175,6 +1338,12 @@ mod tests {
         #[derive(Clone, Debug)]
         struct Identity {}
 
+        impl Label<TaskLabel> for Identity {
+            fn label(&self) -> TaskLabel {
+                TaskLabel::Identity
+            }
+        }
+
         impl std::fmt::Display for Identity {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "{:?}", &self)
@@ -1186,6 +1355,10 @@ mod tests {
             async fn run(self: Box<Self>, input: String) -> TaskResult<String> {
                 println!("identity with input: {input:?}");
                 Ok(input)
+            }
+
+            fn as_any(&self) -> &dyn Any {
+                self
             }
         }
 
@@ -1200,6 +1373,12 @@ mod tests {
         #[derive(Clone, Debug)]
         struct Combine {}
 
+        impl Label<TaskLabel> for Combine {
+            fn label(&self) -> TaskLabel {
+                TaskLabel::Combine
+            }
+        }
+
         impl std::fmt::Display for Combine {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "{:?}", &self)
@@ -1211,6 +1390,10 @@ mod tests {
             async fn run(self: Box<Self>, a: String, b: String) -> TaskResult<String> {
                 println!("combine with input: {:?}", (&a, &b));
                 Ok(format!("{} {}", &a, &b))
+            }
+
+            fn as_any(&self) -> &dyn Any {
+                self
             }
         }
 
@@ -1242,6 +1425,8 @@ mod tests {
 
         // assert the output value of the scheduler is correct
         assert_eq!(result_node.output(), Some("George George".to_string()));
+
+        assert!(false);
 
         Ok(())
     }
