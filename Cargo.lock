@@ -579,6 +579,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ea835d29036a4087793836fa931b08837ad5e957da9e23886b29586fb9b6650"
 
 [[package]]
+name = "downcast-trait"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "888fbf0ba29be64f499a7531e74cfd6ebb6fe5f2235b9d10dacbd4088d9a86c7"
+
+[[package]]
 name = "dwrote"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1883,6 +1889,7 @@ dependencies = [
  "by_address",
  "criterion",
  "downcast-rs",
+ "downcast-trait",
  "futures",
  "futures-util",
  "layout-rs",

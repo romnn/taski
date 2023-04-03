@@ -8,7 +8,7 @@ lto = true
 
 [dependencies]
 anyhow = "1.0"
-# regex = "1.5"
+downcast-trait = "0"
 lazy_static = "1"
 async-trait = "0"
 tokio = { version = "1", features = ["full"] }

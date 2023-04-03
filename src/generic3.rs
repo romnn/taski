@@ -1,5 +1,6 @@
 #![allow(warnings)]
 
+use self::policy::{GreedyPolicy, Policy};
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use std::any::Any;
@@ -297,36 +298,39 @@ pub enum TaskError {
 ///
 /// `TaskNodes` are only generic (static) over the inputs and outputs, since that is of
 /// importance for using a task node as a dependency for another task
-pub struct TaskNode<I, O> {
+pub struct TaskNode<I, O, L> {
     task_name: String,
     short_task_name: String,
+    label: L,
     state: RwLock<State<I, O>>,
     dependencies: Box<dyn Dependencies<I> + Send + Sync>,
     index: usize,
 }
 
-impl<I, O> Hash for TaskNode<I, O> {
+impl<I, O, L> Hash for TaskNode<I, O, L> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // hash the index
         self.index.hash(state);
     }
 }
 
-impl<I, O> std::fmt::Display for TaskNode<I, O> {
+impl<I, O, L> std::fmt::Display for TaskNode<I, O, L> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.short_task_name)
     }
 }
 
-impl<I, O> std::fmt::Debug for TaskNode<I, O>
+impl<I, O, L> std::fmt::Debug for TaskNode<I, O, L>
 where
     I: std::fmt::Debug,
     O: std::fmt::Debug,
+    L: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TaskNode")
             .field("id", &self.index)
             .field("task", &self.task_name)
+            .field("label", &self.label)
             .field("state", &self.state.read().unwrap())
             .field("dependencies", &self.dependencies)
             .finish()
@@ -334,43 +338,73 @@ where
 }
 
 pub mod policy {
-    use async_trait::async_trait;
+    use crate::Executor;
 
-    // #[async_trait]
-    // pub trait Policy {
-    //     async fn arbitrate<I, C, O, E>(
-    //         &self,
-    //         tasks: &Tasks<I, C, O, E>,
-    //         scheduler: &Schedule<I>,
-    //     ) -> Option<I>;
-    //     // where
-    //     // I: Send + Sync + Eq + Hash + std::fmt::Debug + 'static,
-    //     // C: Send + Sync + 'static,
-    //     // O: Send + Sync + 'static,
-    //     // E: Send + Sync + std::fmt::Debug + 'static;
-    // }
+    use super::{Schedule, TaskRef};
+    // use async_trait::async_trait;
 
-    // pub struct GreedyPolicy {
-    //     max_tasks: Option<usize>,
-    // }
+    pub trait Policy {
+        fn arbitrate<P>(&self, schedule: &Executor<P>) -> Option<TaskRef>
+        where
+            P: Policy;
+        // fn arbitrate(
+        //     &self,
+        //     schedule: &Schedule,
+        // ) -> Option<TaskRef>;
+        // where
+        // I: Send + Sync + Eq + Hash + std::fmt::Debug + 'static,
+        // C: Send + Sync + 'static,
+        // O: Send + Sync + 'static,
+        // E: Send + Sync + std::fmt::Debug + 'static;
+    }
 
-    // impl GreedyPolicy {
-    //     pub fn new() -> Self {
-    //         Self::default()
-    //     }
+    pub struct GreedyPolicy {
+        max_tasks: Option<usize>,
+    }
 
-    //     pub fn max_tasks(max_tasks: Option<usize>) -> Self {
-    //         Self { max_tasks }
-    //     }
-    // }
+    impl GreedyPolicy {
+        pub fn new() -> Self {
+            Self::default()
+        }
 
-    // impl Default for GreedyPolicy {
-    //     fn default() -> Self {
-    //         Self {
-    //             max_tasks: Some(num_cpus::get()),
-    //         }
-    //     }
-    // }
+        pub fn max_tasks(max_tasks: Option<usize>) -> Self {
+            Self { max_tasks }
+        }
+    }
+
+    impl Default for GreedyPolicy {
+        fn default() -> Self {
+            Self {
+                max_tasks: Some(num_cpus::get()),
+            }
+        }
+    }
+
+    impl Policy for GreedyPolicy {
+        fn arbitrate<P>(&self, schedule: &Executor<P>) -> Option<TaskRef>
+        where
+            P: Policy,
+        {
+            // count some labels
+            dbg!(schedule.running().iter().count());
+            let num_downloads = schedule
+                .ready()
+                // .running()
+                // .iter()
+                // .filter(|t: &&TaskRef| {
+                .filter(|t: &TaskRef| {
+                    let label = t.label();
+                    // dbg!(label.downcast_ref::<TaskLabel>());
+                    // let label = t.as_any().downcast_ref();
+                    //     match t.label() {
+                    // }
+                    false
+                })
+                .count();
+            dbg!(num_downloads);
+            schedule.ready().next()
+        }
+    }
 }
 
 pub mod dfs {
@@ -386,7 +420,6 @@ pub mod dfs {
     impl<'a, N, F> Dfs<'a, N, F>
     where
         N: std::hash::Hash + Eq,
-        // F: Fn(&'a N) -> bool,
         F: Fn(&&N) -> bool,
     {
         #[inline]
@@ -449,9 +482,6 @@ pub mod dfs {
     }
 }
 
-// pub trait TaskFilterFunc: Fn(&&TaskRef) -> bool {}
-// pub type TaskFilterFunc = dyn Fn(&&TaskRef) -> bool;
-
 pub type DAG<N> = HashMap<N, HashSet<N>>;
 
 pub trait Traversal<N> {
@@ -480,6 +510,13 @@ pub type TaskRef = Arc<dyn Schedulable>;
 pub struct Schedule {
     dependencies: DAG<TaskRef>,
     dependants: DAG<TaskRef>,
+}
+
+/// An executor for a task schedule
+#[derive(Debug)]
+pub struct Executor<P> {
+    schedule: Schedule,
+    policy: P,
     trace: Arc<trace::Trace<usize>>,
     running: Arc<RwLock<HashSet<TaskRef>>>,
     ready: Vec<TaskRef>,
@@ -499,16 +536,19 @@ impl Schedule {
     ///
     /// Dependencies for the task must be references to tasks that have
     /// already been added to the task graph (Arc<TaskNode>)
-    pub fn add_node<I, O, T, D>(&mut self, task: T, deps: D) -> Arc<TaskNode<I, O>>
+    pub fn add_node<I, O, L, T, D>(&mut self, task: T, deps: D, label: L) -> Arc<TaskNode<I, O, L>>
     where
         T: Task<I, O> + std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
         D: Dependencies<I> + Send + Sync + 'static,
         I: std::fmt::Debug + Send + Sync + 'static,
         O: std::fmt::Debug + Send + Sync + 'static,
+        L: std::fmt::Debug + Sync + 'static,
     {
         let node = Arc::new(TaskNode {
             task_name: format!("{task}"),
             short_task_name: format!("{task:?}"),
+            label,
+            // label: task.label(),
             state: RwLock::new(State::Pending(Box::new(task))),
             dependencies: Box::new(deps),
             index: self.dependencies.len(),
@@ -614,107 +654,6 @@ impl Schedule {
         self.dependants.traverse(task, None, |_| true)
     }
 
-    /// Iterator over all running tasks
-    pub fn ready<'a>(&'a self) -> impl Iterator<Item = TaskRef> + '_ {
-        self.ready.iter().cloned()
-    }
-
-    /// Iterator over all running tasks
-    pub fn running<'a>(&'a self) -> RwLockReadGuard<HashSet<TaskRef>> {
-        self.running.read().unwrap()
-    }
-
-    /// Runs the tasks in the graph, consuming it (for now).
-    pub async fn run(&mut self) {
-        use futures::stream::FuturesUnordered;
-        use std::future::Future;
-
-        type TaskFut = dyn Future<Output = TaskRef>;
-        let mut tasks: FuturesUnordered<Pin<Box<TaskFut>>> = FuturesUnordered::new();
-
-        // let mut ready: Vec<TaskRef> = self
-        self.ready = self
-            .dependencies
-            .keys()
-            .filter(|t| t.ready())
-            .cloned()
-            .collect();
-        dbg!(&self.ready);
-
-        loop {
-            // check if we are done
-            if tasks.is_empty() && self.ready.is_empty() {
-                println!("we are done");
-                break;
-            }
-
-            // start running ready tasks
-            while let Some(p) = arbitrate(self) {
-                self.ready.retain(|r| r != &p);
-                // for p in ready.drain(0..) {
-                let trace = self.trace.clone();
-                let running = self.running.clone();
-                tasks.push(Box::pin(async move {
-                    println!("running {:?}", &p);
-
-                    running.write().unwrap().insert(p.clone());
-                    trace.tasks.lock().await.insert(
-                        p.index(),
-                        trace::Task {
-                            label: p.short_name(),
-                            start: Some(Instant::now()),
-                            end: None,
-                        },
-                    );
-                    p.run().await;
-                    if let Some(mut task) = trace.tasks.lock().await.get_mut(&p.index()) {
-                        task.end = Some(Instant::now());
-                    }
-                    p
-                }));
-            }
-
-            // wait for a task to complete
-            if let Some(completed) = tasks.next().await {
-                // todo: check for output or error
-                println!("task {} completed: {:?}", &completed, completed.state());
-                self.running.write().unwrap().remove(&completed);
-                match completed.state() {
-                    CompletionResult::Pending | CompletionResult::Running => {
-                        unreachable!("completed task state is invalid");
-                    }
-                    CompletionResult::Failed(err) => {
-                        // fail fast
-                        self.fail_dependants(&completed, true);
-                    }
-                    CompletionResult::Succeeded => {}
-                }
-                // assert!(matches!(State::Pending(_), &completed));
-
-                if let Some(dependants) = &self.dependants.get(&completed) {
-                    println!("dependants: {:?}", &dependants);
-                    // extend the ready queue
-                    self.ready.extend(dependants.iter().filter_map(|d| {
-                        if d.ready() {
-                            Some(d.clone())
-                        } else {
-                            None
-                        }
-                    }));
-                }
-            }
-        }
-    }
-
-    /// Render the execution trace as an svg image.
-    ///
-    /// # Errors
-    /// If writing to the specified output path fails.
-    pub async fn render_trace(&self, path: impl AsRef<Path>) -> Result<(), std::io::Error> {
-        self.trace.render(path.as_ref()).await;
-        Ok(())
-    }
-
     /// Render the task graph as an svg image.
     ///
     /// # Errors
@@ -794,6 +733,114 @@ impl Schedule {
     }
 }
 
+impl<P> Executor<P>
+where
+    P: Policy,
+{
+    /// Iterator over all ready tasks
+    pub fn ready<'a>(&'a self) -> impl Iterator<Item = TaskRef> + '_ {
+        self.ready.iter().cloned()
+    }
+
+    /// Iterator over all running tasks
+    pub fn running<'a>(&'a self) -> RwLockReadGuard<HashSet<TaskRef>> {
+        self.running.read().unwrap()
+    }
+
+    /// Render the execution trace as an svg image.
+    ///
+    /// # Errors
+    /// If writing to the specified output path fails.
+    pub async fn render_trace(&self, path: impl AsRef<Path>) -> Result<(), std::io::Error> {
+        self.trace.render(path.as_ref()).await;
+        Ok(())
+    }
+
+    /// Runs the tasks in the graph
+    pub async fn run(&mut self) {
+        use futures::stream::FuturesUnordered;
+        use std::future::Future;
+
+        type TaskFut = dyn Future<Output = TaskRef>;
+        let mut tasks: FuturesUnordered<Pin<Box<TaskFut>>> = FuturesUnordered::new();
+
+        // let mut ready: Vec<TaskRef> = self
+        self.ready = self
+            .schedule
+            .dependencies
+            .keys()
+            .filter(|t| t.ready())
+            .cloned()
+            .collect();
+        dbg!(&self.ready);
+
+        loop {
+            // check if we are done
+            if tasks.is_empty() && self.ready.is_empty() {
+                println!("we are done");
+                break;
+            }
+
+            // start running ready tasks
+            // while let Some(p) = self.policy.arbitrate(&self.schedule) {
+            while let Some(p) = self.policy.arbitrate(&self) {
+                self.ready.retain(|r| r != &p);
+                // for p in ready.drain(0..) {
+                let trace = self.trace.clone();
+                let running = self.running.clone();
+                tasks.push(Box::pin(async move {
+                    println!("running {:?}", &p);
+
+                    running.write().unwrap().insert(p.clone());
+                    trace.tasks.lock().await.insert(
+                        p.index(),
+                        trace::Task {
+                            label: p.short_name(),
+                            start: Some(Instant::now()),
+                            end: None,
+                        },
+                    );
+                    p.run().await;
+                    if let Some(mut task) = trace.tasks.lock().await.get_mut(&p.index()) {
+                        task.end = Some(Instant::now());
+                    }
+                    p
+                }));
+            }
+
+            // wait for a task to complete
+            if let Some(completed) = tasks.next().await {
+                // todo: check for output or error
+                println!("task {} completed: {:?}", &completed, completed.state());
+                self.running.write().unwrap().remove(&completed);
+                match completed.state() {
+                    CompletionResult::Pending | CompletionResult::Running => {
+                        unreachable!("completed task state is invalid");
+                    }
+                    CompletionResult::Failed(err) => {
+                        // fail fast
+                        self.schedule.fail_dependants(&completed, true);
+                    }
+                    CompletionResult::Succeeded => {}
+                }
+                // assert!(matches!(State::Pending(_), &completed));
+
+                if let Some(dependants) = &self.schedule.dependants.get(&completed) {
+                    println!("dependants: {:?}", &dependants);
+                    // extend the ready queue
+                    self.ready.extend(dependants.iter().filter_map(|d| {
+                        if d.ready() {
+                            Some(d.clone())
+                        } else {
+                            None
+                        }
+                    }));
+                }
+            }
+        }
+    }
+}
+
 /// Trait representing a schedulable task node.
 ///
 /// TaskNodes implement this trait.
@@ -841,6 +888,10 @@ pub trait Schedulable {
 
     /// Returns the short name of the schedulable task
     fn short_name(&self) -> String;
+
+    /// Returns the labels of this task
+    fn label(&self) -> &dyn Any;
+    // fn labels(&self) -> L;
 
     /// Returns the dependencies of the schedulable task
     fn dependencies(&self) -> Vec<Arc<dyn Schedulable>>;
@@ -903,10 +954,11 @@ impl Eq for dyn Schedulable + '_ {}
 impl Eq for dyn Schedulable + Send + Sync + '_ {}
 
 #[async_trait]
-impl<I, O> Schedulable for TaskNode<I, O>
+impl<I, O, L> Schedulable for TaskNode<I, O, L>
 where
     I: std::fmt::Debug + Send + Sync + 'static,
     O: std::fmt::Debug + Send + Sync + 'static,
+    L: std::fmt::Debug + Sync + 'static, //  + Sync + 'static,
 {
     fn succeeded(&self) -> bool {
         matches!(*self.state.read().unwrap(), State::Succeeded(_))
@@ -953,8 +1005,8 @@ where
                 // let downcasted = pls.downcast_ref::<String>();
                 // let downcasted = pls.downcast_ref::<Box<dyn Label<TaskLabel>>>();
                 // let downcasted = pls.downcast_ref::<&dyn Label<TaskLabel>>();
-                let downcasted = pls.downcast_ref::<&dyn Label<TaskLabel>>();
-                eprintln!("downcasted: {:?}", &downcasted.map(|l| l.label()));
+                // let downcasted = pls.downcast_ref::<&dyn Label<TaskLabel>>();
+                // eprintln!("downcasted: {:?}", &downcasted.map(|l| l.label()));
                 // eprintln!("downcasted: {:?}", &downcasted);
                 // .downcast_ref::<Box<dyn Label<TaskLabel> + '_>>()
                 // if let Some(t) = pls // .downcast_ref::<Box<dyn Label<TaskLabel> + '_>>()
@@ -986,6 +1038,10 @@ where
     //     self.task.as_any()
     // }
 
+    fn label(&self) -> &dyn Any {
+        &self.label
+    }
+
     fn name(&self) -> String {
         format!("{self:?}")
     }
@@ -1003,10 +1059,11 @@ pub trait Dependency<O>: Schedulable {
     fn output(&self) -> Option<O>;
 }
 
-impl<I, O> Dependency<O> for TaskNode<I, O>
+impl<I, O, L> Dependency<O> for TaskNode<I, O, L>
 where
     I: std::fmt::Debug + Send + Sync + 'static,
     O: std::fmt::Debug + Clone + Send + Sync + 'static,
+    L: std::fmt::Debug + Sync + 'static,
 {
     fn output(&self) -> Option<O> {
         match &*self.state.read().unwrap() {
@@ -1118,6 +1175,10 @@ pub trait Task<I, O>: std::fmt::Debug {
     fn name(&self) -> String {
         format!("{self:?}")
     }
+
+    // fn label(&self) -> Option<L> {
+    //     None
+    // }
 }
 
 /// Task that is labeled.
@@ -1189,7 +1250,7 @@ macro_rules! task {
                 async fn run(self: Box<Self>, $($type: $type),*) -> TaskResult<O>;
 
                 // fn as_any(&self) -> &(dyn Any + '_) {
-                fn as_any(&self) -> &dyn Any;
+                // fn as_any(&self) -> &dyn Any;
                 // {
                 //     self
                 // }
@@ -1303,40 +1364,49 @@ generics! {
     // T16
 }
 
-pub fn arbitrate(schedule: &mut Schedule) -> Option<TaskRef> {
-    // count some labels
-    let num_downloads = schedule
-        .running()
-        .iter()
-        .filter(|t| {
-            // let label = t.as_any().downcast_ref();
-            // match t.label() {
-            //
-            // }
-            false
-        })
-        .count();
-    dbg!(num_downloads);
-    schedule.ready().next()
-}
-
-#[derive(Debug)]
-enum TaskLabel {
-    Identity,
-    Combine,
-}
+// pub fn arbitrate(schedule: &mut Schedule) -> Option<TaskRef> {
+//     // count some labels
+//     let num_downloads = schedule
+//         .running()
+//         .iter()
+//         .filter(|t: &&TaskRef| {
+//             // let label = t.as_any().downcast_ref();
+//             //     match t.label() {
+//             // }
+//             false
+//         })
+//         .count();
+//     dbg!(num_downloads);
+//     schedule.ready().next()
+// }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use anyhow::Result;
     use async_trait::async_trait;
+    use core::{
+        any::{Any, TypeId},
+        mem,
+    };
+    use downcast_trait::DowncastTrait;
     use std::path::PathBuf;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_scheduler() -> Result<()> {
         #[derive(Clone, Debug)]
         struct Identity {}
+
+        #[derive(Debug)]
+        enum TaskLabel {
+            Input,
+            Identity,
+            Combine,
+        }
+
+        impl DowncastTrait for Identity {
+            downcast_trait::downcast_trait_impl_convert_to!(dyn Label<TaskLabel>);
+        }
 
         impl Label<TaskLabel> for Identity {
             fn label(&self) -> TaskLabel {
@@ -1357,9 +1427,9 @@ mod tests {
                 Ok(input)
             }
 
-            fn as_any(&self) -> &dyn Any {
-                self
-            }
+            // fn as_any(&self) -> &dyn Any {
+            //     self
+            // }
         }
 
         // #[async_trait]
@@ -1392,8 +1462,37 @@ mod tests {
                 Ok(format!("{} {}", &a, &b))
             }
 
-            fn as_any(&self) -> &dyn Any {
-                self
+            // fn as_any(&self) -> &dyn Any {
+            //     self
+            // }
+        }
+
+        #[derive(Clone, Debug, Default)]
+        struct CustomPolicy {}
+
+        impl Policy for CustomPolicy {
+            fn arbitrate<P>(&self, schedule: &Executor<P>) -> Option<TaskRef>
+            where
+                P: Policy,
+            {
+                // count some labels
+                dbg!(schedule.running().iter().count());
+                let num_downloads = schedule
+                    .ready()
+                    // .running()
+                    // .iter()
+                    // .filter(|t: &&TaskRef| {
+                    .filter(|t: &TaskRef| {
+                        let label = t.label();
+                        dbg!(label.downcast_ref::<TaskLabel>());
+                        // let label = t.as_any().downcast_ref();
+                        //     match t.label() {
+                        // }
+                        false
+                    })
+                    .count();
+                dbg!(num_downloads);
+                schedule.ready().next()
             }
         }
 
@@ -1402,12 +1501,19 @@ mod tests {
 
         let mut graph = Schedule::default();
 
-        let input_node = graph.add_node(TaskInput::from("George".to_string()), ());
+        let input_node =
+            graph.add_node(TaskInput::from("George".to_string()), (), TaskLabel::Input);
 
-        let base_node = graph.add_node(identity.clone(), (input_node,));
-        let parent1_node = graph.add_node(identity.clone(), (base_node.clone(),));
-        let parent2_node = graph.add_node(identity.clone(), (base_node.clone(),));
-        let result_node = graph.add_node(combine.clone(), (parent1_node, parent2_node));
+        let base_node = graph.add_node(identity.clone(), (input_node,), TaskLabel::Identity);
+        let parent1_node =
+            graph.add_node(identity.clone(), (base_node.clone(),), TaskLabel::Identity);
+        let parent2_node =
+            graph.add_node(identity.clone(), (base_node.clone(),), TaskLabel::Identity);
+        let result_node = graph.add_node(
+            combine.clone(),
+            (parent1_node, parent2_node),
+            TaskLabel::Combine,
+        );
         dbg!(&graph);
 
         graph.render_to(
@@ -1417,11 +1523,18 @@ mod tests {
                 .join("../graphs/basic.svg"),
         )?;
 
+        let mut executor = Executor {
+            schedule: graph,
+            running: Arc::new(RwLock::new(HashSet::new())),
+            trace: Arc::new(trace::Trace::new()),
+            policy: CustomPolicy::default(),
+            ready: Vec::new(),
+        };
         // run all tasks
-        graph.run().await;
+        executor.run().await;
 
         // debug the graph now
-        dbg!(&graph);
+        dbg!(&executor.schedule);
 
         // assert the output value of the scheduler is correct
         assert_eq!(result_node.output(), Some("George George".to_string()));
