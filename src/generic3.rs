@@ -1,6 +1,6 @@
 #![allow(warnings)]
 
-use self::policy::{GreedyPolicy, Policy};
+// use self::policy::{GreedyPolicy, Policy};
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use std::any::Any;
@@ -303,7 +303,7 @@ pub struct TaskNode<I, O, L> {
     short_task_name: String,
     label: L,
     state: RwLock<State<I, O>>,
-    dependencies: Box<dyn Dependencies<I> + Send + Sync>,
+    dependencies: Box<dyn Dependencies<I, L> + Send + Sync>,
     index: usize,
 }
 
@@ -338,15 +338,15 @@ where
 }
 
 pub mod policy {
-    use crate::Executor;
+    use super::{Executor, ExecutorTrait};
 
     use super::{Schedule, TaskRef};
     // use async_trait::async_trait;
 
-    pub trait Policy {
-        fn arbitrate<P>(&self, schedule: &Executor<P>) -> Option<TaskRef>
-        where
-            P: Policy;
+    pub trait Policy<L> {
+        fn arbitrate(&self, schedule: &dyn ExecutorTrait<L>) -> Option<TaskRef<L>>;
+        // where
+        //     P: Policy;
         // fn arbitrate(
         //     &self,
         //     schedule: &Schedule,
@@ -380,10 +380,11 @@ pub mod policy {
         }
     }
 
-    impl Policy for GreedyPolicy {
-        fn arbitrate<P>(&self, schedule: &Executor<P>) -> Option<TaskRef>
-        where
-            P: Policy,
+    impl<L> Policy<L> for GreedyPolicy {
+        fn arbitrate(&self, schedule: &dyn ExecutorTrait<L>) -> Option<TaskRef<L>>
+// fn arbitrate<P>(&self, schedule: &Executor<P>) -> Option<TaskRef>
+        // where
+        //     P: Policy,
         {
             // count some labels
             dbg!(schedule.running().iter().count());
@@ -392,7 +393,7 @@ pub mod policy {
                 // .running()
                 // .iter()
                 // .filter(|t: &&TaskRef| {
-                .filter(|t: &TaskRef| {
+                .filter(|t: &TaskRef<L>| {
                     let label = t.label();
                     // dbg!(label.downcast_ref::<TaskLabel>());
                     // let label = t.as_any().downcast_ref();
@@ -503,26 +504,25 @@ impl<N> Traversal<N> for DAG<N> {
     }
 }
 
-pub type TaskRef = Arc<dyn Schedulable>;
+pub type TaskRef<L> = Arc<dyn Schedulable<L>>;
 
 /// A task schedule based on a DAG of task nodes.
-#[derive(Default)]
-pub struct Schedule {
-    dependencies: DAG<TaskRef>,
-    dependants: DAG<TaskRef>,
+#[derive(Clone)]
+pub struct Schedule<L> {
+    dependencies: DAG<TaskRef<L>>,
+    dependants: DAG<TaskRef<L>>,
 }
 
-/// An executor for a task schedule
-#[derive(Debug)]
-pub struct Executor<P> {
-    schedule: Schedule,
-    policy: P,
-    trace: Arc<trace::Trace<usize>>,
-    running: Arc<RwLock<HashSet<TaskRef>>>,
-    ready: Vec<TaskRef>,
+impl<L> Default for Schedule<L> {
+    fn default() -> Self {
+        Self {
+            dependencies: HashMap::new(),
+            dependants: HashMap::new(),
+        }
+    }
 }
 
-impl std::fmt::Debug for Schedule {
+impl<L> std::fmt::Debug for Schedule<L> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Schedule")
             .field("dependencies", &self.dependencies)
@@ -531,15 +531,15 @@ impl std::fmt::Debug for Schedule {
     }
 }
 
-impl Schedule {
+impl<L> Schedule<L> {
     /// Add a new task to the graph.
     ///
     /// Dependencies for the task must be references to tasks that have
     /// already been added to the task graph (Arc<TaskNode>)
-    pub fn add_node<I, O, L, T, D>(&mut self, task: T, deps: D, label: L) -> Arc<TaskNode<I, O, L>>
+    pub fn add_node<I, O, T, D>(&mut self, task: T, deps: D, label: L) -> Arc<TaskNode<I, O, L>>
     where
         T: Task<I, O> + std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
-        D: Dependencies<I> + Send + Sync + 'static,
+        D: Dependencies<I, L> + Send + Sync + 'static,
         I: std::fmt::Debug + Send + Sync + 'static,
         O: std::fmt::Debug + Send + Sync + 'static,
         L: std::fmt::Debug + Sync + 'static,
@@ -555,8 +555,8 @@ impl Schedule {
         });
 
         // check for circles here
-        let mut seen: HashSet<TaskRef> = HashSet::new();
-        let mut stack: Vec<TaskRef> = vec![node.clone()];
+        let mut seen: HashSet<TaskRef<L>> = HashSet::new();
+        let mut stack: Vec<TaskRef<L>> = vec![node.clone()];
 
         while let Some(node) = stack.pop() {
             if !seen.insert(node.clone()) {
@@ -578,7 +578,7 @@ impl Schedule {
         node
     }
 
-    pub fn fail_dependants<'a>(&'a mut self, root: &'a TaskRef, dependencies: bool) {
+    pub fn fail_dependants<'a>(&'a mut self, root: &'a TaskRef<L>, dependencies: bool) {
         let mut queue = vec![root];
         let mut processed = HashSet::new();
         processed.insert(root);
@@ -589,7 +589,7 @@ impl Schedule {
 
             // fail all dependants
             let mut new_processed = vec![];
-            let dependants = self.dependants.traverse(task, None, |dep: &&TaskRef| {
+            let dependants = self.dependants.traverse(task, None, |dep: &&TaskRef<L>| {
                 matches!(dep.state(), CompletionResult::Pending) && !processed.contains(dep)
             });
             for (_, dependant) in dependants {
@@ -604,7 +604,7 @@ impl Schedule {
             // fail all dependencies of task
             if dependencies {
                 // fail all dependencies
-                let dependencies = self.dependencies.traverse(task, None, |dep: &&TaskRef| {
+                let dependencies = self.dependencies.traverse(task, None, |dep: &&TaskRef<L>| {
                     matches!(dep.state(), CompletionResult::Pending) && !processed.contains(task)
                 });
                 for (_, dependency) in dependencies {
@@ -625,32 +625,32 @@ impl Schedule {
     /// Iterator over the immediate dependencies of a task
     pub fn dependencies<'a>(
         &'a self,
-        task: &'a TaskRef,
-    ) -> dfs::Dfs<'a, TaskRef, impl Fn(&&TaskRef) -> bool> {
+        task: &'a TaskRef<L>,
+    ) -> dfs::Dfs<'a, TaskRef<L>, impl Fn(&&TaskRef<L>) -> bool> {
         self.dependencies.traverse(task, Some(1), |_| true)
     }
 
     /// Iterator over the immediate dependants of a task
     pub fn dependants<'a>(
         &'a self,
-        task: &'a TaskRef,
-    ) -> dfs::Dfs<'a, TaskRef, impl Fn(&&TaskRef) -> bool> {
+        task: &'a TaskRef<L>,
+    ) -> dfs::Dfs<'a, TaskRef<L>, impl Fn(&&TaskRef<L>) -> bool> {
         self.dependants.traverse(task, Some(1), |_| true)
     }
 
     /// Iterator over all recursive dependencies of a task
     pub fn rec_dependencies<'a>(
         &'a self,
-        task: &'a TaskRef,
-    ) -> dfs::Dfs<'a, TaskRef, impl Fn(&&TaskRef) -> bool> {
+        task: &'a TaskRef<L>,
+    ) -> dfs::Dfs<'a, TaskRef<L>, impl Fn(&&TaskRef<L>) -> bool> {
         self.dependencies.traverse(task, None, |_| true)
     }
 
     /// Iterator over all recursive dependants of a task
     pub fn rec_dependants<'a>(
         &'a self,
-        task: &'a TaskRef,
-    ) -> dfs::Dfs<'a, TaskRef, impl Fn(&&TaskRef) -> bool> {
+        task: &'a TaskRef<L>,
+    ) -> dfs::Dfs<'a, TaskRef<L>, impl Fn(&&TaskRef<L>) -> bool> {
         self.dependants.traverse(task, None, |_| true)
     }
 
@@ -665,7 +665,7 @@ impl Schedule {
         use layout::topo::layout::VisualGraph;
         use std::io::{BufWriter, Write};
 
-        fn node(node: &Arc<dyn Schedulable>) -> shapes::Element {
+        fn node<LL>(node: &TaskRef<LL>) -> shapes::Element {
             let node_style = style::StyleAttr {
                 line_color: Color::new(0x0000_00FF),
                 line_width: 2,
@@ -684,7 +684,7 @@ impl Schedule {
 
         let mut graph = VisualGraph::new(Orientation::TopToBottom);
 
-        let mut handles: HashMap<Arc<dyn Schedulable>, layout::adt::dag::NodeHandle> =
+        let mut handles: HashMap<Arc<dyn Schedulable<L>>, layout::adt::dag::NodeHandle> =
             HashMap::new();
 
         for (task, deps) in &self.dependencies {
@@ -733,20 +733,42 @@ impl Schedule {
     }
 }
 
-impl<P> Executor<P>
-where
-    P: Policy,
-{
+/// An executor for a task schedule
+#[derive(Debug)]
+pub struct Executor<P, L> {
+    schedule: Schedule<L>,
+    policy: P,
+    trace: Arc<trace::Trace<usize>>,
+    running: Arc<RwLock<HashSet<TaskRef<L>>>>,
+    ready: Vec<TaskRef<L>>,
+}
+
+pub trait ExecutorTrait<L> {
+    fn ready<'a>(&'a self) -> Box<dyn Iterator<Item = TaskRef<L>> + 'a>;
+    // where
+    //     I: Iterator<Item = TaskRef<L>>;
+    fn running<'a>(&'a self) -> HashSet<TaskRef<L>>;
+    // fn running<'a>(&'a self) -> RwLockReadGuard<HashSet<TaskRef<L>>>;
+}
+
+impl<P, L> ExecutorTrait<L> for &mut Executor<P, L> {
     /// Iterator over all ready tasks
-    pub fn ready<'a>(&'a self) -> impl Iterator<Item = TaskRef> + '_ {
-        self.ready.iter().cloned()
+    fn ready<'a>(&'a self) -> Box<dyn Iterator<Item = TaskRef<L>> + 'a> {
+        Box::new(self.ready.iter().cloned())
     }
 
     /// Iterator over all running tasks
-    pub fn running<'a>(&'a self) -> RwLockReadGuard<HashSet<TaskRef>> {
-        self.running.read().unwrap()
+    // pub fn running<'a>(&'a self) -> RwLockReadGuard<HashSet<TaskRef<L>>> {
+    fn running<'a>(&'a self) -> HashSet<TaskRef<L>> {
+        self.running.read().unwrap().clone()
     }
+}
 
+impl<P, L> Executor<P, L>
+where
+    P: policy::Policy<L>,
+    L: 'static,
+{
     /// Render the execution trace as an svg image.
     ///
     /// # Errors
@@ -761,8 +783,8 @@ where
         use futures::stream::FuturesUnordered;
         use std::future::Future;
 
-        type TaskFut = dyn Future<Output = TaskRef>;
-        let mut tasks: FuturesUnordered<Pin<Box<TaskFut>>> = FuturesUnordered::new();
+        type TaskFut<LL> = dyn Future<Output = TaskRef<LL>>;
+        let mut tasks: FuturesUnordered<Pin<Box<TaskFut<L>>>> = FuturesUnordered::new();
 
         // let mut ready: Vec<TaskRef> = self
         self.ready = self
@@ -847,7 +869,7 @@ where
 /// We cannot just use the TaskNode by itself, because we need to combine
 /// task nodes with different generic parameters.
 #[async_trait]
-pub trait Schedulable {
+pub trait Schedulable<L> {
     /// Indicates if the schedulable task is ready for execution.
     ///
     /// A task is ready if all its dependencies succeeded.
@@ -890,71 +912,71 @@ pub trait Schedulable {
     fn short_name(&self) -> String;
 
     /// Returns the labels of this task
-    fn label(&self) -> &dyn Any;
-    // fn labels(&self) -> L;
+    // fn label(&self) -> &dyn Any;
+    fn label(&self) -> &L;
 
     /// Returns the dependencies of the schedulable task
-    fn dependencies(&self) -> Vec<Arc<dyn Schedulable>>;
+    fn dependencies(&self) -> Vec<Arc<dyn Schedulable<L>>>;
 }
 
-impl std::fmt::Debug for dyn Schedulable + '_ {
+impl<L> std::fmt::Debug for dyn Schedulable<L> + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
     }
 }
 
-impl std::fmt::Debug for dyn Schedulable + Send + Sync + '_ {
+impl<L> std::fmt::Debug for dyn Schedulable<L> + Send + Sync + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
     }
 }
 
-impl std::fmt::Display for dyn Schedulable + '_ {
+impl<L> std::fmt::Display for dyn Schedulable<L> + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.short_name())
     }
 }
 
-impl std::fmt::Display for dyn Schedulable + Send + Sync + '_ {
+impl<L> std::fmt::Display for dyn Schedulable<L> + Send + Sync + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.short_name())
     }
 }
 
-impl Hash for dyn Schedulable + '_ {
+impl<L> Hash for dyn Schedulable<L> + '_ {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.index().hash(state);
     }
 }
 
-impl Hash for dyn Schedulable + Send + Sync + '_ {
+impl<L> Hash for dyn Schedulable<L> + Send + Sync + '_ {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.index().hash(state);
     }
 }
 
-impl PartialEq for dyn Schedulable + '_ {
+impl<L> PartialEq for dyn Schedulable<L> + '_ {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         std::cmp::PartialEq::eq(&self.index(), &other.index())
     }
 }
 
-impl PartialEq for dyn Schedulable + Send + Sync + '_ {
+impl<L> PartialEq for dyn Schedulable<L> + Send + Sync + '_ {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         std::cmp::PartialEq::eq(&self.index(), &other.index())
     }
 }
 
-impl Eq for dyn Schedulable + '_ {}
+impl<L> Eq for dyn Schedulable<L> + '_ {}
 
-impl Eq for dyn Schedulable + Send + Sync + '_ {}
+impl<L> Eq for dyn Schedulable<L> + Send + Sync + '_ {}
 
 #[async_trait]
-impl<I, O, L> Schedulable for TaskNode<I, O, L>
+impl<I, O, L> Schedulable<L> for TaskNode<I, O, L>
 where
     I: std::fmt::Debug + Send + Sync + 'static,
     O: std::fmt::Debug + Send + Sync + 'static,
@@ -1038,9 +1060,13 @@ where
     //     self.task.as_any()
     // }
 
-    fn label(&self) -> &dyn Any {
+    fn label(&self) -> &L {
         &self.label
     }
+
+    // fn label(&self) -> &dyn Any {
+    //     &self.label
+    // }
 
     fn name(&self) -> String {
         format!("{self:?}")
@@ -1050,16 +1076,16 @@ where
         format!("{self}")
     }
 
-    fn dependencies(&self) -> Vec<Arc<dyn Schedulable>> {
+    fn dependencies(&self) -> Vec<Arc<dyn Schedulable<L>>> {
         self.dependencies.to_vec()
     }
 }
 
-pub trait Dependency<O>: Schedulable {
+pub trait Dependency<O, L>: Schedulable<L> {
     fn output(&self) -> Option<O>;
 }
 
-impl<I, O, L> Dependency<O> for TaskNode<I, O, L>
+impl<I, O, L> Dependency<O, L> for TaskNode<I, O, L>
 where
     I: std::fmt::Debug + Send + Sync + 'static,
     O: std::fmt::Debug + Clone + Send + Sync + 'static,
@@ -1073,14 +1099,14 @@ where
     }
 }
 
-pub trait Dependencies<O> {
-    fn to_vec(&self) -> Vec<Arc<dyn Schedulable>>;
+pub trait Dependencies<O, L> {
+    fn to_vec(&self) -> Vec<Arc<dyn Schedulable<L>>>;
     fn inputs(&self) -> Option<O>;
 }
 
 // no dependencies
-impl Dependencies<()> for () {
-    fn to_vec(&self) -> Vec<Arc<dyn Schedulable>> {
+impl<L> Dependencies<(), L> for () {
+    fn to_vec(&self) -> Vec<Arc<dyn Schedulable<L>>> {
         vec![]
     }
 
@@ -1090,13 +1116,13 @@ impl Dependencies<()> for () {
 }
 
 // 1 dependency
-impl<D1, T1> Dependencies<(T1,)> for (Arc<D1>,)
+impl<D1, T1, L> Dependencies<(T1,), L> for (Arc<D1>,)
 where
-    D1: Dependency<T1> + 'static,
+    D1: Dependency<T1, L> + 'static,
     T1: Clone,
 {
-    fn to_vec(&self) -> Vec<Arc<dyn Schedulable>> {
-        vec![self.0.clone() as Arc<dyn Schedulable>]
+    fn to_vec(&self) -> Vec<Arc<dyn Schedulable<L>>> {
+        vec![self.0.clone() as Arc<dyn Schedulable<L>>]
     }
 
     fn inputs(&self) -> Option<(T1,)> {
@@ -1109,17 +1135,17 @@ where
 }
 
 // two dependencies
-impl<D1, D2, T1, T2> Dependencies<(T1, T2)> for (Arc<D1>, Arc<D2>)
+impl<D1, D2, T1, T2, L> Dependencies<(T1, T2), L> for (Arc<D1>, Arc<D2>)
 where
-    D1: Dependency<T1> + 'static,
-    D2: Dependency<T2> + 'static,
+    D1: Dependency<T1, L> + 'static,
+    D2: Dependency<T2, L> + 'static,
     T1: Clone,
     T2: Clone,
 {
-    fn to_vec(&self) -> Vec<Arc<dyn Schedulable>> {
+    fn to_vec(&self) -> Vec<Arc<dyn Schedulable<L>>> {
         vec![
-            self.0.clone() as Arc<dyn Schedulable>,
-            self.1.clone() as Arc<dyn Schedulable>,
+            self.0.clone() as Arc<dyn Schedulable<L>>,
+            self.1.clone() as Arc<dyn Schedulable<L>>,
         ]
     }
 
@@ -1132,7 +1158,7 @@ where
     }
 }
 
-impl<O> std::fmt::Debug for dyn Dependencies<O> + '_ {
+impl<O, L> std::fmt::Debug for dyn Dependencies<O, L> + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -1142,7 +1168,7 @@ impl<O> std::fmt::Debug for dyn Dependencies<O> + '_ {
     }
 }
 
-impl<O> std::fmt::Debug for dyn Dependencies<O> + Send + Sync + '_ {
+impl<O, L> std::fmt::Debug for dyn Dependencies<O, L> + Send + Sync + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -1470,11 +1496,11 @@ mod tests {
         #[derive(Clone, Debug, Default)]
         struct CustomPolicy {}
 
-        impl Policy for CustomPolicy {
-            fn arbitrate<P>(&self, schedule: &Executor<P>) -> Option<TaskRef>
-            where
-                P: Policy,
-            {
+        impl policy::Policy<TaskLabel> for CustomPolicy {
+            fn arbitrate(
+                &self,
+                schedule: &dyn ExecutorTrait<TaskLabel>,
+            ) -> Option<TaskRef<TaskLabel>> {
                 // count some labels
                 dbg!(schedule.running().iter().count());
                 let num_downloads = schedule
@@ -1482,9 +1508,10 @@ mod tests {
                     // .running()
                     // .iter()
                     // .filter(|t: &&TaskRef| {
-                    .filter(|t: &TaskRef| {
-                        let label = t.label();
-                        dbg!(label.downcast_ref::<TaskLabel>());
+                    .filter(|t: &TaskRef<TaskLabel>| {
+                        let label: &TaskLabel = t.label();
+                        dbg!(&label);
+                        // dbg!(label.downcast_ref::<TaskLabel>());
                         // let label = t.as_any().downcast_ref();
                         //     match t.label() {
                         // }
