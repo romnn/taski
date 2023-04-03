@@ -1,14 +1,15 @@
 // #![allow(warnings)]
+#![allow(clippy::missing_panics_doc)]
 
 use async_trait::async_trait;
 use futures::stream::StreamExt;
-use std::any::Any;
+
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::RwLock;
-use std::sync::{Arc, RwLockReadGuard};
 use std::time::{Duration, Instant};
 
 #[derive(Debug)]
@@ -83,15 +84,15 @@ impl Tuple for () {
 }
 
 pub mod trace {
-    use plotters::coord::Shift;
+
     use plotters::prelude::*;
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
     use std::collections::HashMap;
     use std::path::Path;
-    use std::sync::Arc;
+
     use std::time::Instant;
-    use std::time::UNIX_EPOCH;
+
     use tokio::sync::Mutex;
 
     #[allow(clippy::cast_sign_loss)]
@@ -155,6 +156,7 @@ pub mod trace {
         /// # Errors
         /// If the trace is too large to be rendered.
         #[allow(clippy::cast_possible_truncation)]
+        #[allow(clippy::cast_precision_loss)]
         pub async fn render(&self, path: impl AsRef<Path>) -> Result<(), RenderError> {
             #[derive(Default, Debug, Clone)]
             struct Bar<T> {
@@ -208,7 +210,7 @@ pub mod trace {
             // dbg!(&bars);
 
             // compute the earliest start and latest end time for normalization
-            let earliest = bars.iter().map(|b| b.begin).min();
+            let _earliest = bars.iter().map(|b| b.begin).min();
             let latest = bars.iter().map(|b| b.begin + b.length).max();
 
             let height = u32::try_from(bars.len()).map_err(|_| RenderError::TooLarge)?
@@ -376,6 +378,7 @@ where
             .field("id", &self.index)
             .field("task", &self.task_name)
             .field("label", &self.label)
+            // safety: panics if the lock is already held by the current thread.
             .field("state", &self.state.read().unwrap())
             .field("dependencies", &self.dependencies)
             .finish()
@@ -383,8 +386,8 @@ where
 }
 
 pub mod policy {
-    use super::{Executor, ExecutorTrait};
-    use super::{Schedule, TaskRef};
+    use super::ExecutorTrait;
+    use super::TaskRef;
 
     pub trait Policy<L> {
         fn arbitrate(&self, schedule: &dyn ExecutorTrait<L>) -> Option<TaskRef<L>>;
@@ -395,10 +398,12 @@ pub mod policy {
     }
 
     impl Fifo {
+        #[must_use]
         pub fn new() -> Self {
             Self::default()
         }
 
+        #[must_use]
         pub fn max_tasks(max_tasks: Option<usize>) -> Self {
             Self { max_tasks }
         }
@@ -430,10 +435,12 @@ pub mod policy {
     }
 
     impl Priority {
+        #[must_use]
         pub fn new() -> Self {
             Self::default()
         }
 
+        #[must_use]
         pub fn max_tasks(max_tasks: Option<usize>) -> Self {
             Self { max_tasks }
         }
@@ -524,7 +531,7 @@ pub mod dfs {
                             return Some((depth, node));
                         }
                     }
-                    if let Some(children) = self.graph.get(&node) {
+                    if let Some(children) = self.graph.get(node) {
                         self.stack.extend(
                             children
                                 .iter()
@@ -787,6 +794,7 @@ impl<L> Schedule<L> {
         graph.do_it(debug_mode, disable_opt, disable_layout, &mut backend);
         let content = backend.finalize();
 
+        // todo: make this async?
         let file = std::fs::OpenOptions::new()
             .write(true)
             .truncate(true)
@@ -809,11 +817,8 @@ pub struct Executor<P, L> {
 }
 
 pub trait ExecutorTrait<L> {
-    fn ready<'a>(&'a self) -> Box<dyn Iterator<Item = TaskRef<L>> + 'a>;
-    // where
-    //     I: Iterator<Item = TaskRef<L>>;
-    fn running<'a>(&'a self) -> HashSet<TaskRef<L>>;
-    // fn running<'a>(&'a self) -> RwLockReadGuard<HashSet<TaskRef<L>>>;
+    fn ready(&self) -> Box<dyn Iterator<Item = TaskRef<L>> + '_>;
+    fn running(&self) -> HashSet<TaskRef<L>>;
 }
 
 impl<P, L> ExecutorTrait<L> for &mut Executor<P, L> {
@@ -823,9 +828,27 @@ impl<P, L> ExecutorTrait<L> for &mut Executor<P, L> {
     }
 
     /// Iterator over all running tasks
-    // pub fn running<'a>(&'a self) -> RwLockReadGuard<HashSet<TaskRef<L>>> {
-    fn running<'a>(&'a self) -> HashSet<TaskRef<L>> {
+    #[allow(clippy::missing_panics_doc)]
+    fn running(&self) -> HashSet<TaskRef<L>> {
+        // safety: panics if the lock is already held by the current thread.
         self.running.read().unwrap().clone()
+    }
+}
+
+impl<L> Executor<policy::Fifo, L>
+where
+    L: 'static,
+{
+    /// Creates a new executor.
+    #[must_use]
+    pub fn new(schedule: Schedule<L>) -> Self {
+        Self {
+            schedule,
+            running: Arc::new(RwLock::new(HashSet::new())),
+            trace: Arc::new(trace::Trace::new()),
+            policy: policy::Fifo::default(),
+            ready: Vec::new(),
+        }
     }
 }
 
@@ -838,9 +861,8 @@ where
     ///
     /// # Errors
     /// If writing to the specified output path fails.
-    pub async fn render_trace(&self, path: impl AsRef<Path>) -> Result<(), std::io::Error> {
-        self.trace.render(path.as_ref()).await;
-        Ok(())
+    pub async fn render_trace(&self, path: impl AsRef<Path>) -> Result<(), trace::RenderError> {
+        self.trace.render(path.as_ref()).await
     }
 
     /// Runs the tasks in the graph
@@ -879,6 +901,7 @@ where
                 tasks.push(Box::pin(async move {
                     println!("running {:?}", &p);
 
+                    // safety: panics if the lock is already held by the current thread.
                     running.write().unwrap().insert(p.clone());
                     trace.tasks.lock().await.insert(
                         p.index(),
@@ -905,7 +928,7 @@ where
                     CompletionResult::Pending | CompletionResult::Running { .. } => {
                         unreachable!("completed task state is invalid");
                     }
-                    CompletionResult::Failed(err) => {
+                    CompletionResult::Failed(_err) => {
                         // fail fast
                         self.schedule.fail_dependants(&completed, true);
                     }
@@ -1076,6 +1099,7 @@ where
     L: std::fmt::Debug + Sync + 'static,
 {
     fn succeeded(&self) -> bool {
+        // safety: panics if the lock is already held by the current thread.
         matches!(*self.state.read().unwrap(), State::Succeeded(_))
     }
 
@@ -1084,6 +1108,7 @@ where
     }
 
     fn state(&self) -> CompletionResult {
+        // safety: panics if the lock is already held by the current thread.
         match &*self.state.read().unwrap() {
             State::Pending(_) => CompletionResult::Pending,
             State::Running => CompletionResult::Running,
@@ -1097,10 +1122,12 @@ where
     }
 
     fn started_at(&self) -> Option<Instant> {
+        // safety: panics if the lock is already held by the current thread.
         *self.started_at.read().unwrap()
     }
 
     fn completed_at(&self) -> Option<Instant> {
+        // safety: panics if the lock is already held by the current thread.
         *self.completed_at.read().unwrap()
     }
 
@@ -1115,8 +1142,12 @@ where
         let state = {
             let state = &mut *self.state.write().unwrap();
             if let State::Pending(_) = state {
+                self.started_at
+                    .write()
+                    .unwrap()
+                    .get_or_insert(Instant::now());
+
                 // returns owned previous value (pending task)
-                self.started_at.write().unwrap().insert(Instant::now());
                 std::mem::replace(state, State::Running)
             } else {
                 // already done
@@ -1127,7 +1158,10 @@ where
             // this will consume the task
             let result = task.run(inputs).await;
 
-            self.completed_at.write().unwrap().insert(Instant::now());
+            self.completed_at
+                .write()
+                .unwrap()
+                .get_or_insert(Instant::now());
 
             // check if task was already marked as failed
             let state = &mut *self.state.write().unwrap();
@@ -1169,6 +1203,7 @@ where
     L: std::fmt::Debug + Sync + 'static,
 {
     fn output(&self) -> Option<O> {
+        // safety: panics if the lock is already held by the current thread.
         match &*self.state.read().unwrap() {
             State::Succeeded(output) => Some(output.clone()),
             _ => None,
@@ -1436,12 +1471,6 @@ generics! {
 mod tests {
     use super::*;
     use anyhow::Result;
-    use async_trait::async_trait;
-    use core::{
-        any::{Any, TypeId},
-        mem,
-    };
-    use downcast_trait::DowncastTrait;
     use std::path::PathBuf;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1449,21 +1478,11 @@ mod tests {
         #[derive(Clone, Debug)]
         struct Identity {}
 
-        #[derive(Debug)]
+        #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
         enum TaskLabel {
             Input,
             Identity,
             Combine,
-        }
-
-        impl DowncastTrait for Identity {
-            downcast_trait::downcast_trait_impl_convert_to!(dyn Label<TaskLabel>);
-        }
-
-        impl Label<TaskLabel> for Identity {
-            fn label(&self) -> TaskLabel {
-                TaskLabel::Identity
-            }
         }
 
         impl std::fmt::Display for Identity {
@@ -1480,22 +1499,8 @@ mod tests {
             }
         }
 
-        // #[async_trait]
-        // impl Task<(String,), String> for Identity {
-        //     async fn run(self: Box<Self>, input: (String,)) -> String {
-        //         println!("identity with input: {:?}", input);
-        //         input.0
-        //     }
-        // }
-
         #[derive(Clone, Debug)]
         struct Combine {}
-
-        impl Label<TaskLabel> for Combine {
-            fn label(&self) -> TaskLabel {
-                TaskLabel::Combine
-            }
-        }
 
         impl std::fmt::Display for Combine {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1516,27 +1521,20 @@ mod tests {
 
         impl policy::Policy<TaskLabel> for CustomPolicy {
             fn arbitrate(&self, exec: &dyn ExecutorTrait<TaskLabel>) -> Option<TaskRef<TaskLabel>> {
-                // count some labels
-                let running_duration: Vec<_> = exec
+                let running_durations: Vec<_> = exec
                     .running()
                     .iter()
                     .filter_map(|t| t.started_at())
                     .map(|start_time| start_time.elapsed())
                     .collect();
-                dbg!(running_duration);
-                dbg!(exec.running().iter().count());
-                let num_downloads = exec
-                    .ready()
-                    // .running()
-                    // .iter()
-                    // .filter(|t: &&TaskRef| {
-                    .filter(|t: &TaskRef<TaskLabel>| {
-                        let label: &TaskLabel = t.label();
-                        dbg!(&label);
-                        false
-                    })
+                dbg!(running_durations);
+                dbg!(exec.running().len());
+                let num_combines = exec
+                    .running()
+                    .iter()
+                    .filter(|t: &&TaskRef<TaskLabel>| *t.label() == TaskLabel::Combine)
                     .count();
-                dbg!(num_downloads);
+                dbg!(num_combines);
                 exec.ready().next()
             }
         }
@@ -1584,7 +1582,7 @@ mod tests {
         // assert the output value of the scheduler is correct
         assert_eq!(result_node.output(), Some("George George".to_string()));
 
-        assert!(false);
+        // assert!(false);
 
         Ok(())
     }

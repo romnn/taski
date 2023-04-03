@@ -1,20 +1,24 @@
-#![allow(warnings)]
+// #![allow(warnings)]
 
 use anyhow::Result;
 use async_process::Command;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use taski::Dependency;
-use taski::*;
+use std::time::Instant;
+use taski::{Dependency, Executor};
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::Mutex;
 
 static INCOMPETECH: &str = "https://incompetech.com/music/royalty-free/mp3-royaltyfree";
+
+#[derive(Debug, Copy, Clone)]
+enum Label {
+    Input,
+    Download,
+    Combine,
+}
 
 #[derive(Clone)]
 struct CombineAudio {
@@ -149,13 +153,13 @@ async fn main() -> Result<()> {
     let audio1_url = format!("{INCOMPETECH}/I%20Got%20a%20Stick%20Arr%20Bryan%20Teoh.mp3");
     let audio2_url = format!("{INCOMPETECH}/The%20Ice%20Giants.mp3");
 
-    let audio1_input = graph.add_node(taski::TaskInput::from(audio1_url), ());
-    let audio2_input = graph.add_node(taski::TaskInput::from(audio2_url), ());
+    let audio1_input = graph.add_node(taski::TaskInput::from(audio1_url), (), Label::Input);
+    let audio2_input = graph.add_node(taski::TaskInput::from(audio2_url), (), Label::Input);
 
-    let audio1_download = graph.add_node(download.clone(), (audio1_input,));
-    let audio2_download = graph.add_node(download.clone(), (audio2_input,));
+    let audio1_download = graph.add_node(download.clone(), (audio1_input,), Label::Download);
+    let audio2_download = graph.add_node(download.clone(), (audio2_input,), Label::Download);
 
-    let result_node = graph.add_node(combine, (audio1_download, audio2_download));
+    let result_node = graph.add_node(combine, (audio1_download, audio2_download), Label::Combine);
     dbg!(&graph);
 
     let source_file = PathBuf::from(file!());
@@ -163,17 +167,20 @@ async fn main() -> Result<()> {
         with_stem(source_file.clone(), |stem| format!("{stem}_dag")).with_extension("svg");
     graph.render_to(graph_file)?;
 
+    let mut executor = Executor::new(graph);
+
     // run all tasks
-    graph.run().await;
+    executor.run().await;
+
     // debug the graph now
-    dbg!(&graph);
+    // dbg!(&executor.schedule);
 
     // render trace
     let trace_file =
         with_stem(source_file.clone(), |stem| format!("{stem}_trace")).with_extension("svg");
-    graph.render_trace(trace_file).await;
+    executor.render_trace(trace_file).await?;
 
-    // // copy to example dir so we can test
+    // copy to example dir so we can test
     let output_path = source_file.with_extension("mp3");
     tokio::fs::copy(result_node.output().unwrap(), output_path).await?;
 
@@ -181,7 +188,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn serial() -> Result<()> {
+#[allow(warnings, clippy::pedantic)]
+fn serial() -> Result<()> {
     // use taski::Task;
     // // let mut combine = CombineAudio::new()?;
     // // // let mut dl = Download::new("https://download.samplelib.com/mp4/sample-15s.mp4")?;
