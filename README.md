@@ -12,18 +12,18 @@
   - for large data (or data that cannot be cloned), just return an Arc<O>
 
 #### TODO (generic3)
-- implement custom arbiter that can access labels of nodes
-  - we want labels
-  - we want current running tasks with start time etc.
 - add a builder for the scheduler
 - add a schedule trait
-- add an executor trait that can exexute a schedule
-- add an policy trait
 
 #### DONE (needs testing)
 - implement fail fast using some graph traversal magic 
 
 #### DONE (generic3)
+- add an executor trait that can execute a schedule
+- add a policy trait
+- implement custom arbiter that can access labels of nodes
+  - we want labels
+  - we want current running tasks with start time etc.
 - arc clone task outputs (we wont do that)
 - return results with boxed? errors
 

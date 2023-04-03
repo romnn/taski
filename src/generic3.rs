@@ -1,6 +1,5 @@
-#![allow(warnings)]
+// #![allow(warnings)]
 
-// use self::policy::{GreedyPolicy, Policy};
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use std::any::Any;
@@ -10,7 +9,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::RwLock;
 use std::sync::{Arc, RwLockReadGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub struct Product<H, T: IntoTuple>(pub(crate) H, pub(crate) T);
@@ -176,11 +175,7 @@ pub mod trace {
                 .filter_map(|(k, t)| match (t.start, t.end) {
                     (Some(s), Some(e)) => {
                         let begin: u128 = s.duration_since(self.start_time).as_millis();
-                        // .try_into()
-                        // .unwrap();
                         let end: u128 = e.duration_since(self.start_time).as_millis();
-                        // .try_into()
-                        // .unwrap();
                         Some(Bar {
                             begin,
                             length: end - begin,
@@ -283,6 +278,53 @@ pub enum CompletionResult {
     /// Task failed with an error
     Failed(Arc<dyn std::error::Error + Send + Sync + 'static>),
 }
+//
+//
+// #[derive(Debug)]
+// enum State<I, O> {
+//     /// Task is pending and waiting to be run
+//     Pending {
+//         created: Instant,
+//         task: Box<dyn Task<I, O> + Send + Sync + 'static>,
+//     },
+//     /// Task is running
+//     Running { created: Instant, started: Instant },
+//     /// Task succeeded with the desired output
+//     Succeeded {
+//         created: Instant,
+//         started: Instant,
+//         completed: Instant,
+//         output: O,
+//     },
+//     /// Task failed with an error
+//     Failed {
+//         created: Instant,
+//         started: Instant,
+//         completed: Instant,
+//         error: Arc<dyn std::error::Error + Send + Sync + 'static>,
+//     },
+// }
+
+// #[derive(Debug, Clone)]
+// pub enum CompletionResult {
+//     /// Task is pending
+//     Pending { created: Instant },
+//     /// Task is running
+//     Running { created: Instant, started: Instant },
+//     /// Task succeeded
+//     Succeeded {
+//         created: Instant,
+//         started: Instant,
+//         completed: Instant,
+//     },
+//     /// Task failed with an error
+//     Failed {
+//         created: Instant,
+//         started: Instant,
+//         completed: Instant,
+//         error: Arc<dyn std::error::Error + Send + Sync + 'static>,
+//     },
+// }
 
 #[derive(thiserror::Error, Debug, Clone, PartialEq)]
 pub enum TaskError {
@@ -302,6 +344,9 @@ pub struct TaskNode<I, O, L> {
     task_name: String,
     short_task_name: String,
     label: L,
+    created_at: Instant,
+    started_at: RwLock<Option<Instant>>,
+    completed_at: RwLock<Option<Instant>>,
     state: RwLock<State<I, O>>,
     dependencies: Box<dyn Dependencies<I, L> + Send + Sync>,
     index: usize,
@@ -339,30 +384,17 @@ where
 
 pub mod policy {
     use super::{Executor, ExecutorTrait};
-
     use super::{Schedule, TaskRef};
-    // use async_trait::async_trait;
 
     pub trait Policy<L> {
         fn arbitrate(&self, schedule: &dyn ExecutorTrait<L>) -> Option<TaskRef<L>>;
-        // where
-        //     P: Policy;
-        // fn arbitrate(
-        //     &self,
-        //     schedule: &Schedule,
-        // ) -> Option<TaskRef>;
-        // where
-        // I: Send + Sync + Eq + Hash + std::fmt::Debug + 'static,
-        // C: Send + Sync + 'static,
-        // O: Send + Sync + 'static,
-        // E: Send + Sync + std::fmt::Debug + 'static;
     }
 
-    pub struct GreedyPolicy {
+    pub struct Fifo {
         max_tasks: Option<usize>,
     }
 
-    impl GreedyPolicy {
+    impl Fifo {
         pub fn new() -> Self {
             Self::default()
         }
@@ -372,7 +404,7 @@ pub mod policy {
         }
     }
 
-    impl Default for GreedyPolicy {
+    impl Default for Fifo {
         fn default() -> Self {
             Self {
                 max_tasks: Some(num_cpus::get()),
@@ -380,30 +412,56 @@ pub mod policy {
         }
     }
 
-    impl<L> Policy<L> for GreedyPolicy {
-        fn arbitrate(&self, schedule: &dyn ExecutorTrait<L>) -> Option<TaskRef<L>>
-// fn arbitrate<P>(&self, schedule: &Executor<P>) -> Option<TaskRef>
-        // where
-        //     P: Policy,
-        {
-            // count some labels
-            dbg!(schedule.running().iter().count());
-            let num_downloads = schedule
-                .ready()
-                // .running()
-                // .iter()
-                // .filter(|t: &&TaskRef| {
-                .filter(|t: &TaskRef<L>| {
-                    let label = t.label();
-                    // dbg!(label.downcast_ref::<TaskLabel>());
-                    // let label = t.as_any().downcast_ref();
-                    //     match t.label() {
-                    // }
-                    false
-                })
-                .count();
-            dbg!(num_downloads);
+    impl<L> Policy<L> for Fifo {
+        fn arbitrate(&self, schedule: &dyn ExecutorTrait<L>) -> Option<TaskRef<L>> {
+            if let Some(limit) = self.max_tasks {
+                if schedule.running().len() >= limit {
+                    // do not schedule new task
+                    return None;
+                }
+            }
+            // schedule first task in the ready queue
             schedule.ready().next()
+        }
+    }
+
+    pub struct Priority {
+        max_tasks: Option<usize>,
+    }
+
+    impl Priority {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        pub fn max_tasks(max_tasks: Option<usize>) -> Self {
+            Self { max_tasks }
+        }
+    }
+
+    impl Default for Priority {
+        fn default() -> Self {
+            Self {
+                max_tasks: Some(num_cpus::get()),
+            }
+        }
+    }
+
+    impl<L> Policy<L> for Priority
+    where
+        L: std::cmp::Ord,
+    {
+        fn arbitrate(&self, schedule: &dyn ExecutorTrait<L>) -> Option<TaskRef<L>> {
+            if let Some(limit) = self.max_tasks {
+                if schedule.running().len() >= limit {
+                    // do not schedule new task
+                    return None;
+                }
+            }
+            // schedule highest priority task from the ready queue
+            let mut ready: Vec<_> = schedule.ready().collect();
+            ready.sort_by(|a, b| a.label().cmp(b.label()));
+            ready.first().cloned()
         }
     }
 }
@@ -454,7 +512,6 @@ pub mod dfs {
     where
         N: std::hash::Hash + Eq,
         F: Fn(&&N) -> bool,
-        // F: Fn(&'a N) -> bool,
     {
         type Item = (usize, &'a N);
 
@@ -548,7 +605,9 @@ impl<L> Schedule<L> {
             task_name: format!("{task}"),
             short_task_name: format!("{task:?}"),
             label,
-            // label: task.label(),
+            created_at: Instant::now(),
+            started_at: RwLock::new(None),
+            completed_at: RwLock::new(None),
             state: RwLock::new(State::Pending(Box::new(task))),
             dependencies: Box::new(deps),
             index: self.dependencies.len(),
@@ -578,6 +637,12 @@ impl<L> Schedule<L> {
         node
     }
 
+    /// Marks all dependants as failed.
+    ///
+    /// Optionally also marks all dependencies as failed if they have no pending dependants.
+    ///
+    /// TODO: is this correct and sufficient?
+    /// TODO: really test this...
     pub fn fail_dependants<'a>(&'a mut self, root: &'a TaskRef<L>, dependencies: bool) {
         let mut queue = vec![root];
         let mut processed = HashSet::new();
@@ -786,7 +851,6 @@ where
         type TaskFut<LL> = dyn Future<Output = TaskRef<LL>>;
         let mut tasks: FuturesUnordered<Pin<Box<TaskFut<L>>>> = FuturesUnordered::new();
 
-        // let mut ready: Vec<TaskRef> = self
         self.ready = self
             .schedule
             .dependencies
@@ -804,12 +868,14 @@ where
             }
 
             // start running ready tasks
-            // while let Some(p) = self.policy.arbitrate(&self.schedule) {
             while let Some(p) = self.policy.arbitrate(&self) {
                 self.ready.retain(|r| r != &p);
-                // for p in ready.drain(0..) {
+
                 let trace = self.trace.clone();
                 let running = self.running.clone();
+
+                // todo: how would this look if we put the tracing and running stuff
+                // before and after when the complete in the scheduler loop?
                 tasks.push(Box::pin(async move {
                     println!("running {:?}", &p);
 
@@ -836,7 +902,7 @@ where
                 println!("task {} completed: {:?}", &completed, completed.state());
                 self.running.write().unwrap().remove(&completed);
                 match completed.state() {
-                    CompletionResult::Pending | CompletionResult::Running => {
+                    CompletionResult::Pending | CompletionResult::Running { .. } => {
                         unreachable!("completed task state is invalid");
                     }
                     CompletionResult::Failed(err) => {
@@ -870,13 +936,6 @@ where
 /// task nodes with different generic parameters.
 #[async_trait]
 pub trait Schedulable<L> {
-    /// Indicates if the schedulable task is ready for execution.
-    ///
-    /// A task is ready if all its dependencies succeeded.
-    fn ready(&self) -> bool {
-        self.dependencies().iter().all(|d| d.succeeded())
-    }
-
     /// Indicates if the schedulable task has succeeded.
     ///
     /// A task is succeeded if its output is available.
@@ -887,6 +946,19 @@ pub trait Schedulable<L> {
 
     /// The result state of the task after completion.
     fn state(&self) -> CompletionResult;
+
+    /// The creation time of the task.
+    fn created_at(&self) -> Instant;
+
+    /// The starting time of the task.
+    ///
+    /// If the task is still pending, `None` is returned.
+    fn started_at(&self) -> Option<Instant>;
+
+    /// The completion time of the task.
+    ///
+    /// If the task is still pending or running, `None` is returned.
+    fn completed_at(&self) -> Option<Instant>;
 
     /// Unique index of the task node in the DAG graph
     fn index(&self) -> usize;
@@ -903,20 +975,41 @@ pub trait Schedulable<L> {
     async fn run(&self);
 
     /// Returns the name of the schedulable task
-    // fn as_any(&self) -> &dyn Any;
-
-    /// Returns the name of the schedulable task
     fn name(&self) -> String;
 
     /// Returns the short name of the schedulable task
     fn short_name(&self) -> String;
 
-    /// Returns the labels of this task
-    // fn label(&self) -> &dyn Any;
+    /// Returns the label of this task.
     fn label(&self) -> &L;
 
     /// Returns the dependencies of the schedulable task
     fn dependencies(&self) -> Vec<Arc<dyn Schedulable<L>>>;
+
+    /// Indicates if the schedulable task is ready for execution.
+    ///
+    /// A task is ready if all its dependencies succeeded.
+    fn ready(&self) -> bool {
+        self.dependencies().iter().all(|d| d.succeeded())
+    }
+
+    /// The running_time time of the task.
+    ///
+    /// If the task has not yet completed, `None` is returned.
+    fn running_time(&self) -> Option<Duration> {
+        match (self.started_at(), self.completed_at()) {
+            (Some(s), Some(e)) => Some(e.duration_since(s)),
+            _ => None,
+        }
+    }
+
+    /// The queue time of the task.
+    fn queue_time(&self) -> Duration {
+        match self.started_at() {
+            Some(s) => s.duration_since(self.created_at()),
+            None => self.created_at().elapsed(),
+        }
+    }
 }
 
 impl<L> std::fmt::Debug for dyn Schedulable<L> + '_ {
@@ -980,7 +1073,7 @@ impl<I, O, L> Schedulable<L> for TaskNode<I, O, L>
 where
     I: std::fmt::Debug + Send + Sync + 'static,
     O: std::fmt::Debug + Send + Sync + 'static,
-    L: std::fmt::Debug + Sync + 'static, //  + Sync + 'static,
+    L: std::fmt::Debug + Sync + 'static,
 {
     fn succeeded(&self) -> bool {
         matches!(*self.state.read().unwrap(), State::Succeeded(_))
@@ -999,6 +1092,18 @@ where
         }
     }
 
+    fn created_at(&self) -> Instant {
+        self.created_at
+    }
+
+    fn started_at(&self) -> Option<Instant> {
+        *self.started_at.read().unwrap()
+    }
+
+    fn completed_at(&self) -> Option<Instant> {
+        *self.completed_at.read().unwrap()
+    }
+
     fn index(&self) -> usize {
         self.index
     }
@@ -1011,6 +1116,7 @@ where
             let state = &mut *self.state.write().unwrap();
             if let State::Pending(_) = state {
                 // returns owned previous value (pending task)
+                self.started_at.write().unwrap().insert(Instant::now());
                 std::mem::replace(state, State::Running)
             } else {
                 // already done
@@ -1018,34 +1124,14 @@ where
             }
         };
         if let State::Pending(task) = state {
-            // before consuming, we should extract the labels
-            //
-            {
-                // let pls = task.as_ref();
-                let pls = task.as_any();
-
-                // let downcasted = pls.downcast_ref::<String>();
-                // let downcasted = pls.downcast_ref::<Box<dyn Label<TaskLabel>>>();
-                // let downcasted = pls.downcast_ref::<&dyn Label<TaskLabel>>();
-                // let downcasted = pls.downcast_ref::<&dyn Label<TaskLabel>>();
-                // eprintln!("downcasted: {:?}", &downcasted.map(|l| l.label()));
-                // eprintln!("downcasted: {:?}", &downcasted);
-                // .downcast_ref::<Box<dyn Label<TaskLabel> + '_>>()
-                // if let Some(t) = pls // .downcast_ref::<Box<dyn Label<TaskLabel> + '_>>()
-                //
-                // {
-                //     eprintln!("downcasted: {:?}", &t);
-                //     // dbg!(t);
-                //     // dbg!(t.label());
-                // }
-                // drop(pls);
-            }
             // this will consume the task
             let result = task.run(inputs).await;
 
+            self.completed_at.write().unwrap().insert(Instant::now());
+
             // check if task was already marked as failed
             let state = &mut *self.state.write().unwrap();
-            if !matches!(state, State::Running) {
+            if !matches!(state, State::Running { .. }) {
                 return;
             }
             *state = match result {
@@ -1055,18 +1141,9 @@ where
         }
     }
 
-    /// Returns the name of the schedulable task
-    // fn as_any(&self) -> &dyn Any {
-    //     self.task.as_any()
-    // }
-
     fn label(&self) -> &L {
         &self.label
     }
-
-    // fn label(&self) -> &dyn Any {
-    //     &self.label
-    // }
 
     fn name(&self) -> String {
         format!("{self:?}")
@@ -1186,25 +1263,9 @@ pub trait Task<I, O>: std::fmt::Debug {
     /// may only run exactly once.
     async fn run(self: Box<Self>, input: I) -> TaskResult<O>;
 
-    // fn as_any<'a>(&'a self) -> Box<dyn Any + '_> {
-    // fn as_any(&self) -> Box<dyn Any + '_> {
-    fn as_any(&self) -> &dyn Any;
-    // fn as_any(&self) -> &dyn Any where Self: Sized + 'static {
-    //     self
-    //     // Box::new(self)
-    //     // Box::new(self)
-    // }
-    // fn as_any(&self) -> &(dyn Any + '_);
-
-    /// The name of the task
-    /// todo: add debug bound here
     fn name(&self) -> String {
         format!("{self:?}")
     }
-
-    // fn label(&self) -> Option<L> {
-    //     None
-    // }
 }
 
 /// Task that is labeled.
@@ -1235,14 +1296,6 @@ where
     async fn run(self: Box<Self>, _input: ()) -> TaskResult<O> {
         Ok(self.0)
     }
-
-    // fn as_any(self: &Box<Self>) -> Box<dyn Any> {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    //     Box::new(self)
-    // }
 }
 
 fn summarize(s: impl AsRef<str>, max_length: usize) -> String {
@@ -1274,12 +1327,6 @@ macro_rules! task {
             #[async_trait]
             pub trait $name<$( $type ),*, O>: std::fmt::Debug {
                 async fn run(self: Box<Self>, $($type: $type),*) -> TaskResult<O>;
-
-                // fn as_any(&self) -> &(dyn Any + '_) {
-                // fn as_any(&self) -> &dyn Any;
-                // {
-                //     self
-                // }
             }
 
             #[allow(non_snake_case)]
@@ -1293,11 +1340,6 @@ macro_rules! task {
                     // destructure to tuple and call
                     let ($( $type ),*,) = input;
                     $name::run(self, $( $type ),*).await
-                }
-
-                // fn as_any(&self) -> &(dyn Any + '_) {
-                fn as_any(&self) -> &dyn Any {
-                    self
                 }
             }
         }
@@ -1390,22 +1432,6 @@ generics! {
     // T16
 }
 
-// pub fn arbitrate(schedule: &mut Schedule) -> Option<TaskRef> {
-//     // count some labels
-//     let num_downloads = schedule
-//         .running()
-//         .iter()
-//         .filter(|t: &&TaskRef| {
-//             // let label = t.as_any().downcast_ref();
-//             //     match t.label() {
-//             // }
-//             false
-//         })
-//         .count();
-//     dbg!(num_downloads);
-//     schedule.ready().next()
-// }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1452,10 +1478,6 @@ mod tests {
                 println!("identity with input: {input:?}");
                 Ok(input)
             }
-
-            // fn as_any(&self) -> &dyn Any {
-            //     self
-            // }
         }
 
         // #[async_trait]
@@ -1487,23 +1509,23 @@ mod tests {
                 println!("combine with input: {:?}", (&a, &b));
                 Ok(format!("{} {}", &a, &b))
             }
-
-            // fn as_any(&self) -> &dyn Any {
-            //     self
-            // }
         }
 
         #[derive(Clone, Debug, Default)]
         struct CustomPolicy {}
 
         impl policy::Policy<TaskLabel> for CustomPolicy {
-            fn arbitrate(
-                &self,
-                schedule: &dyn ExecutorTrait<TaskLabel>,
-            ) -> Option<TaskRef<TaskLabel>> {
+            fn arbitrate(&self, exec: &dyn ExecutorTrait<TaskLabel>) -> Option<TaskRef<TaskLabel>> {
                 // count some labels
-                dbg!(schedule.running().iter().count());
-                let num_downloads = schedule
+                let running_duration: Vec<_> = exec
+                    .running()
+                    .iter()
+                    .filter_map(|t| t.started_at())
+                    .map(|start_time| start_time.elapsed())
+                    .collect();
+                dbg!(running_duration);
+                dbg!(exec.running().iter().count());
+                let num_downloads = exec
                     .ready()
                     // .running()
                     // .iter()
@@ -1511,15 +1533,11 @@ mod tests {
                     .filter(|t: &TaskRef<TaskLabel>| {
                         let label: &TaskLabel = t.label();
                         dbg!(&label);
-                        // dbg!(label.downcast_ref::<TaskLabel>());
-                        // let label = t.as_any().downcast_ref();
-                        //     match t.label() {
-                        // }
                         false
                     })
                     .count();
                 dbg!(num_downloads);
-                schedule.ready().next()
+                exec.ready().next()
             }
         }
 
