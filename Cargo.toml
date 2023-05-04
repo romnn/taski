@@ -27,6 +27,17 @@ exclude = [
 [profile.release]
 lto = true
 
+[features]
+default  = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+rustc-args = ["--cfg", "docsrs"]
+
+[package.metadata.cargo-feature-combinations]
+denylist = ["default"]
+
 [dependencies]
 anyhow = "1.0"
 downcast-trait = "0"
@@ -50,18 +61,15 @@ palette = "0"
 
 [dev-dependencies]
 # approx = "0.5"
-async-process = "1.5"
+async-process = "1"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.11", features = ["stream"] }
+reqwest = { version = "0", features = ["stream"] }
 tempfile = "3"
 # tempdir = "0.3"
 anyhow = "1"
 # lazy_static = "1"
 pretty_assertions = "1"
 # itertools = "0"
-criterion = "0.4"
+criterion = "0"
 urlencoding = "2"
 # layout-rs = "0.1"
-
-[features]
-default  = []

@@ -14,12 +14,12 @@ jobs:
     outputs:
       matrix: ${{ steps.feature-matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - uses: dtolnay/rust-toolchain@stable
       - uses: romnn/cargo-feature-combinations@main
 
       - name: Compute feature matrix
         id: feature-matrix
-        run: >-
-          echo "matrix=$(cargo fc matrix)"
-          >> "$GITHUB_OUTPUT"
+        run: |
+          matrix="$(cargo fc matrix)"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
