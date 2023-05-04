@@ -20,7 +20,7 @@ keywords = [
   "execution"
 ]
 exclude = [
-  "graphs/"
+  "graphs/",
   "examples/"
 ]
 
