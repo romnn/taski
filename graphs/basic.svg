@@ -12,29 +12,29 @@ refX="10" refY="3.5" orient="auto">
 </defs><style>
 .a15 { font-size: 15px; font-family: Times, serif; }
 </style>
-<ellipse cx="160" cy="80" rx="50" ry="50" fill="#b4b3b2ff" 
+<ellipse cx="80" cy="400" rx="50" ry="50" fill="#b4b3b2ff" 
             stroke-width="2" stroke="#000000ff"/>
 <text dominant-baseline="middle" text-anchor="middle" 
-            x="160" y="65" class="a15"><tspan x = "160" dy="1.0em">TaskInput(&quot;George&quot;)</tspan></text><ellipse cx="80" cy="560" rx="50" ry="50" fill="#b4b3b2ff" 
+            x="80" y="385" class="a15"><tspan x = "80" dy="1.0em">Identity</tspan></text><ellipse cx="160" cy="240" rx="50" ry="50" fill="#b4b3b2ff" 
             stroke-width="2" stroke="#000000ff"/>
 <text dominant-baseline="middle" text-anchor="middle" 
-            x="80" y="545" class="a15"><tspan x = "80" dy="1.0em">Combine</tspan></text><ellipse cx="80" cy="400" rx="50" ry="50" fill="#b4b3b2ff" 
+            x="160" y="225" class="a15"><tspan x = "160" dy="1.0em">Identity</tspan></text><ellipse cx="160" cy="80" rx="50" ry="50" fill="#b4b3b2ff" 
             stroke-width="2" stroke="#000000ff"/>
 <text dominant-baseline="middle" text-anchor="middle" 
-            x="80" y="385" class="a15"><tspan x = "80" dy="1.0em">Identity</tspan></text><ellipse cx="240" cy="400" rx="50" ry="50" fill="#b4b3b2ff" 
+            x="160" y="65" class="a15"><tspan x = "160" dy="1.0em">TaskInput(&quot;George&quot;)</tspan></text><ellipse cx="240" cy="400" rx="50" ry="50" fill="#b4b3b2ff" 
             stroke-width="2" stroke="#000000ff"/>
 <text dominant-baseline="middle" text-anchor="middle" 
-            x="240" y="385" class="a15"><tspan x = "240" dy="1.0em">Identity</tspan></text><ellipse cx="160" cy="240" rx="50" ry="50" fill="#b4b3b2ff" 
+            x="240" y="385" class="a15"><tspan x = "240" dy="1.0em">Identity</tspan></text><ellipse cx="80" cy="560" rx="50" ry="50" fill="#b4b3b2ff" 
             stroke-width="2" stroke="#000000ff"/>
 <text dominant-baseline="middle" text-anchor="middle" 
-            x="160" y="225" class="a15"><tspan x = "160" dy="1.0em">Identity</tspan></text><path id="arrow0" d="M 80 450 C 80 480, 80 480, 80 510 " stroke="#000000ff" stroke-width="2"   marker-end="url(#endarrow)" 
+            x="80" y="545" class="a15"><tspan x = "80" dy="1.0em">Combine</tspan></text><path id="arrow0" d="M 137.6393202250021 284.7213595499958 C 124.22291236000336 311.5541752799933, 115.77708763999664 328.4458247200067, 102.36067977499789 355.2786404500042 " stroke="#000000ff" stroke-width="2"   marker-end="url(#endarrow)" 
             fill="transparent" />
-<text><textPath href="#arrow0" startOffset="50%" text-anchor="middle" class="a15"></textPath></text><path id="arrow1" d="M 204.64466094067262 435.3553390593274 C 183.4314575050762 456.5685424949238, 136.5685424949238 503.43145750507614, 115.35533905932738 524.6446609406726 " stroke="#000000ff" stroke-width="2"   marker-end="url(#endarrow)" 
+<text><textPath href="#arrow0" startOffset="50%" text-anchor="middle" class="a15"></textPath></text><path id="arrow1" d="M 160 130 C 160 160, 160 160, 160 190 " stroke="#000000ff" stroke-width="2"   marker-end="url(#endarrow)" 
             fill="transparent" />
-<text><textPath href="#arrow1" startOffset="50%" text-anchor="middle" class="a15"></textPath></text><path id="arrow2" d="M 160 130 C 160 160, 160 160, 160 190 " stroke="#000000ff" stroke-width="2"   marker-end="url(#endarrow)" 
+<text><textPath href="#arrow1" startOffset="50%" text-anchor="middle" class="a15"></textPath></text><path id="arrow2" d="M 182.3606797749979 284.7213595499958 C 195.77708763999664 311.5541752799933, 204.22291236000336 328.4458247200067, 217.6393202250021 355.2786404500042 " stroke="#000000ff" stroke-width="2"   marker-end="url(#endarrow)" 
             fill="transparent" />
-<text><textPath href="#arrow2" startOffset="50%" text-anchor="middle" class="a15"></textPath></text><path id="arrow3" d="M 182.3606797749979 284.7213595499958 C 195.77708763999664 311.5541752799933, 204.22291236000336 328.4458247200067, 217.6393202250021 355.2786404500042 " stroke="#000000ff" stroke-width="2"   marker-end="url(#endarrow)" 
+<text><textPath href="#arrow2" startOffset="50%" text-anchor="middle" class="a15"></textPath></text><path id="arrow3" d="M 80 450 C 80 480, 80 480, 80 510 " stroke="#000000ff" stroke-width="2"   marker-end="url(#endarrow)" 
             fill="transparent" />
-<text><textPath href="#arrow3" startOffset="50%" text-anchor="middle" class="a15"></textPath></text><path id="arrow4" d="M 137.6393202250021 284.7213595499958 C 124.22291236000336 311.5541752799933, 115.77708763999664 328.4458247200067, 102.36067977499789 355.2786404500042 " stroke="#000000ff" stroke-width="2"   marker-end="url(#endarrow)" 
+<text><textPath href="#arrow3" startOffset="50%" text-anchor="middle" class="a15"></textPath></text><path id="arrow4" d="M 204.64466094067262 435.3553390593274 C 183.4314575050762 456.5685424949238, 136.5685424949238 503.43145750507614, 115.35533905932738 524.6446609406726 " stroke="#000000ff" stroke-width="2"   marker-end="url(#endarrow)" 
             fill="transparent" />
 <text><textPath href="#arrow4" startOffset="50%" text-anchor="middle" class="a15"></textPath></text></svg>

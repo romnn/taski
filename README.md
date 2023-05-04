@@ -1,5 +1,32 @@
 ## djtool task scheduler
 
+#### Design decisions
+- task node is internal, because this is where the state is kept (interior mutability) and where the unique index is assigned to
+  - construction from the user not possible
+  - only possible to creatge using `add_task`
+  - only valid input as dependency (we know it was added (otherwise we do)) and we know it cannot have circles
+  - user cannot run any methods on it? wrong because of task trait
+- use a result type, to allow for fail fast strategies
+  - user workaround: use infallible and propagate an Option<O>
+- clone outputs as inputs, this is more efficient for small data such as i32
+  - for large data (or data that cannot be cloned), just return an Arc<O>
+
+#### TODO (generic3)
+- add a builder for the scheduler
+- add a schedule trait
+
+#### DONE (needs testing)
+- implement fail fast using some graph traversal magic 
+
+#### DONE (generic3)
+- add an executor trait that can execute a schedule
+- add a policy trait
+- implement custom arbiter that can access labels of nodes
+  - we want labels
+  - we want current running tasks with start time etc.
+- arc clone task outputs (we wont do that)
+- return results with boxed? errors
+
 #### Considerations
 - do we need products? why? can we get away with only tuples
     - i guess so, they allow single argument for use in traits where we would need a new trait for each number of args otherwise

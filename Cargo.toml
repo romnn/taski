@@ -7,9 +7,9 @@ edition = "2021"
 lto = true
 
 [dependencies]
-# anyhow = "1.0"
-# regex = "1.5"
-# lazy_static = "1.4.0"
+anyhow = "1.0"
+downcast-trait = "0"
+lazy_static = "1"
 async-trait = "0"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
@@ -21,6 +21,11 @@ thiserror = "1"
 async-stream = "0.3"
 num_cpus = "1"
 by_address = "1"
+layout-rs = "0.1"
+plotters = "0.3"
+rand = "0"
+rand_chacha = "0"
+palette = "0"
 
 [dev-dependencies]
 # approx = "0.5"
@@ -35,7 +40,7 @@ pretty_assertions = "1"
 # itertools = "0"
 criterion = "0.4"
 urlencoding = "2"
-layout-rs = "0.1"
+# layout-rs = "0.1"
 
 [features]
 default  = []

@@ -1,4 +1,4 @@
-#![allow(warnings)]
+// #![allow(warnings)]
 
 // pub mod schedule;
 // pub mod task;
@@ -7,3 +7,5 @@
 // pub mod generic2;
 pub mod generic3;
 // pub mod task1;
+//
+pub use generic3::*;
