@@ -2,6 +2,27 @@
 name = "taski"
 version = "0.0.1"
 edition = "2021"
+authors = ["romnn <contact@romnn.com>"]
+description = "async task DAG execution"
+license-file = "LICENSE"
+readme = "README.md"
+homepage = "https://github.com/romnn/taski"
+repository = "https://github.com/romnn/taski"
+categories = [
+  "asynchronous",
+  "concurrency",
+]
+keywords = [
+  "async",
+  "task",
+  "scheduling",
+  "dag",
+  "execution"
+]
+exclude = [
+  "graphs/"
+  "examples/"
+]
 
 [profile.release]
 lto = true
