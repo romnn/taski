@@ -78,7 +78,31 @@ pub use task::{Input as TaskInput, Ref as TaskRef, Result as TaskResult, Task1, 
 mod tests {
     use super::*;
     use color_eyre::eyre;
-    use std::path::PathBuf;
+
+    #[cfg(feature = "render")]
+    macro_rules! function_name {
+        () => {{
+            fn f() {}
+            fn type_name_of<T>(_: T) -> &'static str {
+                std::any::type_name::<T>()
+            }
+            let name = type_name_of(f);
+            &name[..name.len() - 3]
+        }};
+    }
+
+    #[cfg(feature = "render")]
+    macro_rules! test_result_file {
+        ($suffix:expr) => {{
+            let manifest_path = std::path::PathBuf::from(std::env!("CARGO_MANIFEST_DIR"));
+            let function_name = function_name!();
+            let function_name = function_name
+                .strip_suffix("::{{closure}}")
+                .unwrap_or(function_name);
+            let test = format!("{}_{}", function_name, $suffix);
+            manifest_path.join("src/tests/").join(test)
+        }};
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_scheduler() -> eyre::Result<()> {
@@ -169,33 +193,27 @@ mod tests {
             (parent1_node, parent2_node),
             TaskLabel::Combine,
         );
-        dbg!(&graph);
+        // dbg!(&graph);
 
-        let graph_out = PathBuf::from(file!())
-            .parent()
-            .unwrap()
-            .join("../graphs/basic.svg");
-        graph.render_to(graph_out)?;
+        #[cfg(feature = "render")]
+        graph.render_to(test_result_file!("graph.svg"))?;
 
         let mut executor = PolicyExecutor::custom(graph, CustomPolicy::default());
-        // let mut executor = PolicyExecutor {
-        //     schedule: graph,
-        //     // running: Arc::new(RwLock::new(HashSet::new())),
-        //     // running: Default::default(),
-        //     trace: Arc::new(trace::Trace::new()),
-        //     // policy: CustomPolicy::default(),
-        //     // ready: Vec::new(),
-        // };
+
         // run all tasks
         executor.run().await;
 
+        #[cfg(feature = "render")]
+        executor
+            .trace
+            .render_to(test_result_file!("trace.svg"))
+            .await?;
+
         // debug the graph now
-        dbg!(&executor.schedule);
+        // dbg!(&executor.schedule);
 
         // assert the output value of the scheduler is correct
         assert_eq!(result_node.output(), Some("George George".to_string()));
-
-        // assert!(false);
 
         Ok(())
     }

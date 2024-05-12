@@ -72,7 +72,7 @@ pub mod render {
 
     impl<T> super::Trace<T>
     where
-        T: std::cmp::Ord + Eq,
+        T: std::hash::Hash + std::cmp::Ord + Eq,
     {
         /// Render the execution trace as an SVG image.
         ///
@@ -112,12 +112,19 @@ pub mod render {
                 begin: u128,
                 length: u128,
                 label: String,
-                id: T,
+                id: Option<T>,
                 color: RGBColor,
             }
 
             const BAR_HEIGHT: i32 = 40;
             const TARGET_WIDTH: u32 = 2000;
+
+            fn calculate_hash<T: std::hash::Hash>(t: &T) -> u64 {
+                use std::hash::Hasher;
+                let mut s = std::hash::DefaultHasher::new();
+                t.hash(&mut s);
+                s.finish()
+            }
 
             let tasks = self.tasks.lock().await;
 
@@ -125,47 +132,50 @@ pub mod render {
                 .iter()
                 .filter_map(|(k, t)| match (t.start, t.end) {
                     (Some(s), Some(e)) => {
-                        let begin: u128 = s.duration_since(self.start_time).as_millis();
-                        let end: u128 = e.duration_since(self.start_time).as_millis();
+                        let begin: u128 = s.duration_since(self.start_time).as_nanos();
+                        let end: u128 = e.duration_since(self.start_time).as_nanos();
+                        let mut rng = ChaCha8Rng::seed_from_u64(calculate_hash(k));
+                        let hue = palette::RgbHue::from_degrees(rng.gen_range(0.0..360.0));
+                        let color = hue_to_rgb(hue);
                         Some(Bar {
                             begin,
-                            length: end - begin,
+                            length: end.saturating_sub(begin),
                             label: t.label.clone(),
-                            color: RGBColor(0, 0, 0),
-                            id: k,
+                            color,
+                            id: Some(k),
                         })
                     }
                     _ => None,
                 })
                 .collect();
 
-            // assign colors to the tasks
-            let mut rng = ChaCha8Rng::seed_from_u64(0);
-            let colors = std::iter::repeat_with(|| {
-                let hue = palette::RgbHue::from_degrees(rng.gen_range(0.0..360.0));
-                hue_to_rgb(hue)
+            // compute the latest end time for normalization
+            let latest = bars
+                .iter()
+                .map(|b| b.begin + b.length)
+                .max()
+                .unwrap_or_default();
+            bars.push(Bar {
+                begin: 0,
+                length: latest,
+                label: "Total".to_string(),
+                color: RGBColor(200, 200, 200),
+                id: None,
             });
+
+            // sort bars based based on their time
             bars.sort_by(|a, b| {
                 if a.begin == b.begin {
-                    a.id.cmp(b.id)
+                    a.id.cmp(&b.id)
                 } else {
                     a.begin.cmp(&b.begin)
                 }
             });
 
-            for (bar, color) in bars.iter_mut().zip(colors) {
-                bar.color = color;
-            }
-            // dbg!(&bars);
-
-            // compute the earliest start and latest end time for normalization
-            let _earliest = bars.iter().map(|b| b.begin).min();
-            let latest = bars.iter().map(|b| b.begin + b.length).max();
-
             let height = u32::try_from(bars.len()).map_err(|_| Error::TooLarge)?
                 * u32::try_from(BAR_HEIGHT).map_err(|_| Error::TooLarge)?
                 + 5;
-            let bar_width = f64::from(TARGET_WIDTH - 200) / latest.unwrap_or(0) as f64;
+            let bar_width = f64::from(TARGET_WIDTH - 200) / latest as f64;
 
             let mut content = String::new();
 
@@ -178,16 +188,17 @@ pub mod render {
 
                 for (i, bar) in bars.iter().enumerate() {
                     let i = i32::try_from(i).unwrap();
-                    let rect = [
-                        ((bar_width * bar.begin as f64) as i32, BAR_HEIGHT * i),
-                        (
-                            (bar_width * (bar.begin + bar.length) as f64) as i32 + 2,
-                            BAR_HEIGHT * (i + 1),
-                        ),
-                    ];
+
+                    let top_left = ((bar_width * bar.begin as f64) as i32, BAR_HEIGHT * i);
+                    let bottom_right = (
+                        (bar_width * (bar.begin + bar.length) as f64) as i32 + 2,
+                        BAR_HEIGHT * (i + 1),
+                    );
+
+                    // draw bar
                     drawing_area
                         .draw(&Rectangle::new(
-                            rect,
+                            [top_left, bottom_right],
                             ShapeStyle {
                                 color: bar.color.to_rgba(),
                                 filled: true,
@@ -195,6 +206,8 @@ pub mod render {
                             },
                         ))
                         .unwrap();
+
+                    // draw label
                     drawing_area
                         .draw_text(
                             &bar.label,

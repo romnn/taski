@@ -1,5 +1,3 @@
-// #![allow(warnings)]
-
 use async_process::Command;
 use color_eyre::eyre;
 use futures::stream::StreamExt;

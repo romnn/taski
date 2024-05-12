@@ -2,9 +2,20 @@
 
 [<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/romnn/taski/build.yml?branch=main&label=build">](https://github.com/romnn/taski/actions/workflows/build.yml)
 [<img alt="test status" src="https://img.shields.io/github/actions/workflow/status/romnn/taski/test.yml?branch=main&label=test">](https://github.com/romnn/taski/actions/workflows/test.yml)
-[<img alt="benchmarks" src="https://img.shields.io/github/actions/workflow/status/romnn/taski/bench.yml?branch=main&label=bench">](https://romnn.github.io/taski/)
 [<img alt="crates.io" src="https://img.shields.io/crates/v/taski">](https://crates.io/crates/taski)
 [<img alt="docs.rs" src="https://img.shields.io/docsrs/taski/latest?label=docs.rs">](https://docs.rs/taski)
+
+#### TODO (generic3)
+
+- add examples of competitor libs
+- use petgraph for the graph representation
+- add more tests for different policies
+- add embedme
+- add documentation
+- add one more example
+- remove the trace mutex? should not be required
+- add a builder for the scheduler
+- add a schedule trait
 
 #### Design decisions
 
@@ -17,11 +28,6 @@
   - user workaround: use infallible and propagate an Option<O>
 - clone outputs as inputs, this is more efficient for small data such as i32
   - for large data (or data that cannot be cloned), just return an Arc<O>
-
-#### TODO (generic3)
-
-- add a builder for the scheduler
-- add a schedule trait
 
 #### DONE (needs testing)
 
