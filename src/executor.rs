@@ -1,9 +1,4 @@
-use crate::{
-    policy,
-    schedule::Schedule,
-    task::{CompletionResult, TaskRef},
-    trace,
-};
+use crate::{policy, schedule::Schedule, task, trace};
 
 use std::collections::HashSet;
 use std::pin::Pin;
@@ -11,29 +6,30 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 pub trait Executor<L> {
-    fn ready(&self) -> Box<dyn Iterator<Item = TaskRef<L>> + '_>;
-    fn running(&self) -> HashSet<TaskRef<L>>;
+    fn ready(&self) -> Box<dyn Iterator<Item = task::Ref<L>> + '_>;
+    fn running(&self) -> HashSet<task::Ref<L>>;
 }
 
 /// An executor for a task schedule
 #[derive(Debug)]
+#[allow(clippy::module_name_repetitions)]
 pub struct PolicyExecutor<P, L> {
     pub schedule: Schedule<L>,
     pub policy: P,
     pub trace: Arc<trace::Trace<usize>>,
-    pub running: Arc<RwLock<HashSet<TaskRef<L>>>>,
-    pub ready: Vec<TaskRef<L>>,
+    pub running: Arc<RwLock<HashSet<task::Ref<L>>>>,
+    pub ready: Vec<task::Ref<L>>,
 }
 
 impl<P, L> Executor<L> for &mut PolicyExecutor<P, L> {
     /// Iterator over all ready tasks
-    fn ready<'a>(&'a self) -> Box<dyn Iterator<Item = TaskRef<L>> + 'a> {
+    fn ready<'a>(&'a self) -> Box<dyn Iterator<Item = task::Ref<L>> + 'a> {
         Box::new(self.ready.iter().cloned())
     }
 
     /// Iterator over all running tasks
     #[allow(clippy::missing_panics_doc)]
-    fn running(&self) -> HashSet<TaskRef<L>> {
+    fn running(&self) -> HashSet<task::Ref<L>> {
         // safety: panics if the lock is already held by the current thread.
         self.running.read().unwrap().clone()
     }
@@ -85,7 +81,7 @@ where
         use futures::stream::{FuturesUnordered, StreamExt};
         use std::future::Future;
 
-        type TaskFut<LL> = dyn Future<Output = TaskRef<LL>>;
+        type TaskFut<LL> = dyn Future<Output = task::Ref<LL>>;
         let mut tasks: FuturesUnordered<Pin<Box<TaskFut<L>>>> = FuturesUnordered::new();
 
         self.ready = self
@@ -140,14 +136,14 @@ where
                 println!("task {} completed: {:?}", &completed, completed.state());
                 self.running.write().unwrap().remove(&completed);
                 match completed.state() {
-                    CompletionResult::Pending | CompletionResult::Running { .. } => {
+                    task::CompletionResult::Pending | task::CompletionResult::Running { .. } => {
                         unreachable!("completed task state is invalid");
                     }
-                    CompletionResult::Failed(_err) => {
+                    task::CompletionResult::Failed(_err) => {
                         // fail fast
                         self.schedule.fail_dependants(&completed, true);
                     }
-                    CompletionResult::Succeeded => {}
+                    task::CompletionResult::Succeeded => {}
                 }
                 // assert!(matches!(State::Pending(_), &completed));
 

@@ -1,4 +1,3 @@
-#[allow(missing_debug_implementations)]
 use crate::dag::DAG;
 
 #[derive(Clone)]

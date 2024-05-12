@@ -20,9 +20,9 @@ fn summarize(s: impl AsRef<str>, max_length: usize) -> String {
     }
 }
 
-pub type TaskRef<L> = Arc<dyn Schedulable<L>>;
+pub type Ref<L> = Arc<dyn Schedulable<L>>;
 
-pub type TaskResult<O> = Result<O, Box<dyn std::error::Error + Send + Sync + 'static>>;
+pub type Result<O> = std::result::Result<O, Box<dyn std::error::Error + Send + Sync + 'static>>;
 
 #[derive(Debug)]
 pub enum State<I, O> {
@@ -52,7 +52,7 @@ pub enum CompletionResult {
 pub trait Task<I, O>: std::fmt::Debug {
     /// Running a task consumes it, which does guarantee that tasks
     /// may only run exactly once.
-    async fn run(self: Box<Self>, input: I) -> TaskResult<O>;
+    async fn run(self: Box<Self>, input: I) -> Result<O>;
 
     fn name(&self) -> String {
         format!("{self:?}")
@@ -66,9 +66,9 @@ pub trait Label<L> {
 
 /// A simple terminal input for a task
 #[derive(Clone, Debug)]
-pub struct TaskInput<O>(O);
+pub struct Input<O>(O);
 
-impl<O> From<O> for TaskInput<O> {
+impl<O> From<O> for Input<O> {
     #[inline]
     fn from(value: O) -> Self {
         Self(value)
@@ -80,16 +80,16 @@ impl<O> From<O> for TaskInput<O> {
 /// All that this implementation does is return a shared reference to
 /// the task input.
 #[async_trait::async_trait]
-impl<O> Task<(), O> for TaskInput<O>
+impl<O> Task<(), O> for Input<O>
 where
     O: std::fmt::Debug + Send + 'static,
 {
-    async fn run(self: Box<Self>, _input: ()) -> TaskResult<O> {
+    async fn run(self: Box<Self>, _input: ()) -> Result<O> {
         Ok(self.0)
     }
 }
 
-impl<O> std::fmt::Display for TaskInput<O>
+impl<O> std::fmt::Display for Input<O>
 where
     O: std::fmt::Display,
 {
@@ -100,7 +100,7 @@ where
 }
 
 #[derive(thiserror::Error, Debug, Clone, PartialEq)]
-pub enum TaskError {
+pub enum Error {
     #[error("task dependency failed")]
     FailedDependency,
 }
@@ -113,7 +113,8 @@ pub enum TaskError {
 ///
 /// `TaskNodes` are only generic (static) over the inputs and outputs, since that is of
 /// importance for using a task node as a dependency for another task
-pub struct TaskNode<I, O, L> {
+#[derive(Debug)]
+pub struct Node<I, O, L> {
     pub task_name: String,
     pub short_task_name: String,
     pub label: L,
@@ -125,39 +126,39 @@ pub struct TaskNode<I, O, L> {
     pub index: usize,
 }
 
-impl<I, O, L> Hash for TaskNode<I, O, L> {
+impl<I, O, L> Hash for Node<I, O, L> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // hash the index
         self.index.hash(state);
     }
 }
 
-impl<I, O, L> std::fmt::Display for TaskNode<I, O, L> {
+impl<I, O, L> std::fmt::Display for Node<I, O, L> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.short_task_name)
     }
 }
 
-impl<I, O, L> std::fmt::Debug for TaskNode<I, O, L>
-where
-    I: std::fmt::Debug,
-    O: std::fmt::Debug,
-    L: std::fmt::Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TaskNode")
-            .field("id", &self.index)
-            .field("task", &self.task_name)
-            .field("label", &self.label)
-            // safety: panics if the lock is already held by the current thread.
-            .field("state", &self.state.read().unwrap())
-            .field("dependencies", &self.dependencies)
-            .finish()
-    }
-}
+// impl<I, O, L> std::fmt::Debug for Node<I, O, L>
+// where
+//     I: std::fmt::Debug,
+//     O: std::fmt::Debug,
+//     L: std::fmt::Debug,
+// {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         f.debug_struct("TaskNode")
+//             .field("id", &self.index)
+//             .field("task", &self.task_name)
+//             .field("label", &self.label)
+//             // safety: panics if the lock is already held by the current thread.
+//             .field("state", &self.state.read().unwrap())
+//             .field("dependencies", &self.dependencies)
+//             .finish()
+//     }
+// }
 
 #[async_trait::async_trait]
-impl<I, O, L> Schedulable<L> for TaskNode<I, O, L>
+impl<I, O, L> Schedulable<L> for Node<I, O, L>
 where
     I: std::fmt::Debug + Send + Sync + 'static,
     O: std::fmt::Debug + Send + Sync + 'static,
@@ -257,7 +258,7 @@ where
     }
 }
 
-impl<I, O, L> Dependency<O, L> for TaskNode<I, O, L>
+impl<I, O, L> Dependency<O, L> for Node<I, O, L>
 where
     I: std::fmt::Debug + Send + Sync + 'static,
     O: std::fmt::Debug + Clone + Send + Sync + 'static,
@@ -348,7 +349,7 @@ macro_rules! task {
         #[allow(non_snake_case)]
         #[async_trait::async_trait]
         pub trait $name<$( $type ),*, O>: std::fmt::Debug {
-            async fn run(self: Box<Self>, $($type: $type),*) -> TaskResult<O>;
+            async fn run(self: Box<Self>, $($type: $type),*) -> Result<O>;
         }
 
         #[allow(non_snake_case)]
@@ -358,7 +359,7 @@ macro_rules! task {
             T: $name<$( $type ),*, O> + Send + 'static,
             $($type: std::fmt::Debug + Send + 'static),*
         {
-            async fn run(self: Box<Self>, input: ($( $type ),*,)) -> TaskResult<O> {
+            async fn run(self: Box<Self>, input: ($( $type ),*,)) -> Result<O> {
                 // destructure to tuple and call
                 let ($( $type ),*,) = input;
                 $name::run(self, $( $type ),*).await

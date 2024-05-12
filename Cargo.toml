@@ -27,7 +27,7 @@ exclude = [
 [features]
 # default  = []
 default  = ["render"]
-render = ["rand", "rand_chacha", "plotters", "palette", "layout-rs"]
+render = ["dep:rand", "dep:rand_chacha", "dep:plotters", "dep:palette", "dep:layout-rs"]
 
 [package.metadata.docs.rs]
 all-features = true

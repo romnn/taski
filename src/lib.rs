@@ -13,7 +13,7 @@ pub use crate::dependency::Dependency;
 pub use executor::PolicyExecutor;
 pub use policy::Policy;
 pub use schedule::Schedule;
-pub use task::{Task1, Task2, TaskInput, TaskRef, TaskResult};
+pub use task::{Input as TaskInput, Ref as TaskRef, Result as TaskResult, Task1, Task2};
 
 // use async_trait::async_trait;
 // use futures::stream::StreamExt;
@@ -82,8 +82,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_scheduler() -> eyre::Result<()> {
-        color_eyre::install()?;
-
         #[derive(Clone, Debug)]
         struct Identity {}
 
@@ -150,6 +148,8 @@ mod tests {
                 exec.ready().next()
             }
         }
+
+        color_eyre::install()?;
 
         let combine = Combine {};
         let identity = Identity {};
