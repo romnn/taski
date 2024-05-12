@@ -18,10 +18,10 @@ jobs:
         # for now we are not too pedantic
         continue-on-error: true
         run: >-
-          cargo clippy --package "${{ matrix.package.name }}" --features "${{ matrix.package.features }}" --tests --benches --examples --all-targets -- -Dclippy::all -Dclippy::pedantic
+          cargo clippy --package "${{ matrix.package.name }}" --no-default-features --features "${{ matrix.package.features }}" --tests --benches --examples --all-targets -- -Dclippy::all -Dclippy::pedantic
       - name: Test
         run: >-
-          cargo test --package "${{ matrix.package.name }}" --features "${{ matrix.package.features }}" --all-targets
+          cargo test --package "${{ matrix.package.name }}" --no-default-features --features "${{ matrix.package.features }}" --tests --benches --examples --all-targets
   publish:
     name: publish (dry-run)
     runs-on: ubuntu-latest
