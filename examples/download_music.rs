@@ -1,13 +1,12 @@
 // #![allow(warnings)]
 
-use anyhow::Result;
 use async_process::Command;
-use async_trait::async_trait;
+use color_eyre::eyre;
 use futures::stream::StreamExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
-use taski::{Dependency, Executor};
+use taski::{Dependency, PolicyExecutor};
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 
@@ -43,7 +42,7 @@ impl std::fmt::Debug for CombineAudio {
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl taski::Task2<PathBuf, PathBuf, PathBuf> for CombineAudio {
     async fn run(self: Box<Self>, audio1: PathBuf, audio2: PathBuf) -> taski::TaskResult<PathBuf> {
         use std::ffi::OsStr;
@@ -69,11 +68,12 @@ impl taski::Task2<PathBuf, PathBuf, PathBuf> for CombineAudio {
             ])
             .output()
             .await?;
-        if !output.status.success() {
+        if output.status.success() {
+            Ok(audio_file)
+        } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow::anyhow!("{}", stderr).into());
+            return Err(eyre::eyre!("{}", stderr).into());
         }
-        Ok(audio_file)
     }
 }
 
@@ -102,16 +102,16 @@ impl Download {
     }
 }
 
-fn filename_from_url(url: &reqwest::Url) -> Result<String> {
+fn filename_from_url(url: &reqwest::Url) -> eyre::Result<String> {
     let filename = url
         .path_segments()
         .and_then(std::iter::Iterator::last)
-        .ok_or(anyhow::anyhow!("failed to get last segement of path {url}"))?;
+        .ok_or(eyre::eyre!("failed to get last segement of path {url}"))?;
     let filename = urlencoding::decode(filename)?;
     Ok(filename.to_string())
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl taski::Task1<String, PathBuf> for Download {
     async fn run(self: Box<Self>, url: String) -> taski::TaskResult<PathBuf> {
         let url = reqwest::Url::parse(url.as_ref())?;
@@ -128,21 +128,47 @@ impl taski::Task1<String, PathBuf> for Download {
     }
 }
 
-fn with_stem(path: impl AsRef<Path>, func: impl FnOnce(&str) -> String) -> PathBuf {
-    let stem = path
-        .as_ref()
-        .file_stem()
-        .and_then(std::ffi::OsStr::to_str)
-        .unwrap();
-    let extension = path.as_ref().extension().unwrap();
-    let new_stem = func(stem);
-    path.as_ref()
-        .with_file_name(new_stem)
-        .with_extension(extension)
+trait PathExt {
+    fn update_stem(&self, func: impl FnOnce(&str) -> String) -> PathBuf;
 }
 
+impl PathExt for Path {
+    fn update_stem(&self, func: impl FnOnce(&str) -> String) -> PathBuf {
+        let stem = self
+            .file_stem()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or_default();
+        let extension = self.extension().unwrap_or_default();
+        let new_stem = func(stem);
+        self.with_file_name(new_stem).with_extension(extension)
+    }
+}
+
+// fn with_stem(path: impl AsRef<Path>, func: impl FnOnce(&str) -> String) -> PathBuf {
+//     let stem = path
+//         .as_ref()
+//         .file_stem()
+//         .and_then(std::ffi::OsStr::to_str)
+//         .unwrap();
+//     let extension = path.as_ref().extension().unwrap();
+//     let new_stem = func(stem);
+//     path.as_ref()
+//         .with_file_name(new_stem)
+//         .with_extension(extension)
+// }
+
+// async fn open_file(path: &std::path::Path) -> Result<tokio::io::BufWriter<tokio::fs::File>> {
+//     let file = tokio::fs::OpenOptions::new()
+//         .write(true)
+//         .truncate(true)
+//         .create(true)
+//         .open(path)
+//         .await?;
+//     Ok(tokio::io::BufWriter::new(file))
+// }
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> eyre::Result<()> {
     let start = Instant::now();
     let tmp_dir = Arc::new(TempDir::new()?);
 
@@ -163,11 +189,12 @@ async fn main() -> Result<()> {
     dbg!(&graph);
 
     let source_file = PathBuf::from(file!());
-    let graph_file =
-        with_stem(source_file.clone(), |stem| format!("{stem}_dag")).with_extension("svg");
-    graph.render_to(graph_file)?;
+    let graph_path = source_file
+        .update_stem(|stem| format!("{stem}_dag"))
+        .with_extension("svg");
+    graph.render_to(&graph_path)?;
 
-    let mut executor = Executor::new(graph);
+    let mut executor = PolicyExecutor::fifo(graph);
 
     // run all tasks
     executor.run().await;
@@ -176,9 +203,10 @@ async fn main() -> Result<()> {
     // dbg!(&executor.schedule);
 
     // render trace
-    let trace_file =
-        with_stem(source_file.clone(), |stem| format!("{stem}_trace")).with_extension("svg");
-    executor.render_trace(trace_file).await?;
+    let trace_file = source_file
+        .update_stem(|stem| format!("{stem}_trace"))
+        .with_extension("svg");
+    executor.trace.render_to(&trace_file).await?;
 
     // copy to example dir so we can test
     let output_path = source_file.with_extension("mp3");
@@ -189,7 +217,7 @@ async fn main() -> Result<()> {
 }
 
 #[allow(warnings, clippy::pedantic)]
-fn serial() -> Result<()> {
+fn serial() -> eyre::Result<()> {
     // use taski::Task;
     // // let mut combine = CombineAudio::new()?;
     // // // let mut dl = Download::new("https://download.samplelib.com/mp4/sample-15s.mp4")?;

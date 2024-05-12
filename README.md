@@ -1,4 +1,10 @@
-## djtool task scheduler
+## taski
+
+[<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/romnn/taski/build.yml?branch=main&label=build">](https://github.com/romnn/taski/actions/workflows/build.yml)
+[<img alt="test status" src="https://img.shields.io/github/actions/workflow/status/romnn/taski/test.yml?branch=main&label=test">](https://github.com/romnn/taski/actions/workflows/test.yml)
+[<img alt="benchmarks" src="https://img.shields.io/github/actions/workflow/status/romnn/taski/bench.yml?branch=main&label=bench">](https://romnn.github.io/taski/)
+[<img alt="crates.io" src="https://img.shields.io/crates/v/taski">](https://crates.io/crates/taski)
+[<img alt="docs.rs" src="https://img.shields.io/docsrs/taski/latest?label=docs.rs">](https://docs.rs/taski)
 
 #### Design decisions
 
