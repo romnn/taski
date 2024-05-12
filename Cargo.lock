@@ -178,16 +178,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async_dag_comparison"
-version = "0.1.0"
-dependencies = [
- "async_dag",
- "color-eyre",
- "taski",
- "tokio",
-]
-
-[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -336,6 +326,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 
 [[package]]
+name = "comparison_example"
+version = "0.1.0"
+dependencies = [
+ "async_dag",
+ "color-eyre",
+ "taski",
+ "tokio",
+]
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -463,7 +463,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "download_and_convert_music"
+name = "download_and_convert_music_example"
 version = "0.1.0"
 dependencies = [
  "async-process",
