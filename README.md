@@ -1,6 +1,7 @@
 ## djtool task scheduler
 
 #### Design decisions
+
 - task node is internal, because this is where the state is kept (interior mutability) and where the unique index is assigned to
   - construction from the user not possible
   - only possible to creatge using `add_task`
@@ -12,13 +13,16 @@
   - for large data (or data that cannot be cloned), just return an Arc<O>
 
 #### TODO (generic3)
+
 - add a builder for the scheduler
 - add a schedule trait
 
 #### DONE (needs testing)
-- implement fail fast using some graph traversal magic 
+
+- implement fail fast using some graph traversal magic
 
 #### DONE (generic3)
+
 - add an executor trait that can execute a schedule
 - add a policy trait
 - implement custom arbiter that can access labels of nodes
@@ -28,13 +32,14 @@
 - return results with boxed? errors
 
 #### Considerations
+
 - do we need products? why? can we get away with only tuples
-    - i guess so, they allow single argument for use in traits where we would need a new trait for each number of args otherwise
+  - i guess so, they allow single argument for use in traits where we would need a new trait for each number of args otherwise
 - how can we express the invoke trait?
 - use a task trait rather than a task struct, users will want to pass their own context and so on and have their own methods ...
-    - only drawback: can only call the async runner function with the Product type (single argument)
-        - possible solution: define for the product type
-        - use macros to expand for different traits
+  - only drawback: can only call the async runner function with the Product type (single argument)
+    - possible solution: define for the product type
+    - use macros to expand for different traits
 
 ```bash
 cargo install cargo-expand
@@ -42,9 +47,9 @@ cargo expand generic2
 ```
 
 #### TODO
+
 - use the warp generics, but name them better
 - replace the function
-
 
 _Note_: If this implementation turns out to be well designed and useful for different situations, it will become a stand alone external dependency for djtool.
 
