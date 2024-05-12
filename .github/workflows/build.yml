@@ -1,11 +1,8 @@
 name: build
-
 on: [push, pull_request]
-
 jobs:
   feature-matrix:
     uses: ./.github/workflows/feature-matrix.yml
-
   build:
     name: build ${{ matrix.package.name }} (${{ matrix.package.features }})
     runs-on: ubuntu-latest
@@ -15,12 +12,8 @@ jobs:
       matrix:
         package: ${{ fromJson(needs.feature-matrix.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-
       - name: Build
         run: >-
-          cargo build
-          --package "${{ matrix.package.name }}"
-          --features "${{ matrix.package.features }}"
-          --all-targets
+          cargo build --package "${{ matrix.package.name }}" --features "${{ matrix.package.features }}" --all-targets

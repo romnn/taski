@@ -1,12 +1,10 @@
 name: feature-matrix
-
 on:
   workflow_call:
     outputs:
       matrix:
         description: "the feature matrix"
         value: ${{ jobs.matrix.outputs.matrix }}
-
 jobs:
   matrix:
     name: Compute feature matrix
@@ -14,10 +12,9 @@ jobs:
     outputs:
       matrix: ${{ steps.feature-matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: romnn/cargo-feature-combinations@main
-
       - name: Compute feature matrix
         id: feature-matrix
         run: |
