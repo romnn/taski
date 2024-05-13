@@ -8,7 +8,7 @@ async fn sum(lhs: i32, rhs: i32) -> i32 {
     lhs + rhs
 }
 
-pub async fn run() -> i32 {
+pub async fn run() -> Option<i32> {
     let mut graph = Graph::new();
     // The closures are not run yet.
     let _1 = graph.add_task(|| async { 1 });
@@ -24,8 +24,19 @@ pub async fn run() -> i32 {
     // sets _3 as _7's first parameter
     let _7 = graph.add_child_task(_3, sum, 0).unwrap();
 
+    // sets _4 as _7's second parameter
+    graph.update_dependency(_4, _7, 1).unwrap();
+
     // Runs all the tasks with maximum possible parallelism.
     graph.run().await;
 
-    graph.get_value::<i32>(_7).unwrap()
+    graph.get_value::<i32>(_7)
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn it_works() {
+        assert_eq!(super::run().await, Some(7));
+    }
 }

@@ -1,6 +1,7 @@
 use crate::{
     dependency::{Dependencies, Dependency},
     schedule::Schedulable,
+    task,
 };
 
 use std::hash::{Hash, Hasher};
@@ -33,7 +34,27 @@ pub enum State<I, O> {
     /// Task succeeded with the desired output
     Succeeded(O),
     /// Task failed with an error
-    Failed(Arc<dyn std::error::Error + Send + Sync + 'static>),
+    Failed(Box<dyn std::error::Error + Send + Sync + 'static>),
+    // Failed(Arc<dyn std::error::Error + Send + Sync + 'static>),
+}
+
+impl<I, O> State<I, O> {
+    // impl CompletionResult<'_> {
+    pub fn is_pending(&self) -> bool {
+        matches!(self, Self::Pending(_))
+    }
+
+    pub fn is_running(&self) -> bool {
+        matches!(self, Self::Running)
+    }
+
+    pub fn did_succeed(&self) -> bool {
+        matches!(self, Self::Succeeded(_))
+    }
+
+    pub fn did_fail(&self) -> bool {
+        matches!(self, Self::Failed(_))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -45,7 +66,30 @@ pub enum CompletionResult {
     /// Task succeeded
     Succeeded,
     /// Task failed with an error
-    Failed(Arc<dyn std::error::Error + Send + Sync + 'static>),
+    Failed,
+    // Failed(&'a (dyn std::error::Error + Send + Sync + 'static)),
+    // Failed(Box<dyn std::error::Error + Send + Sync + 'static>),
+    // Failed(Arc<dyn std::error::Error + Send + Sync + 'static>),
+}
+
+impl CompletionResult {
+    // impl CompletionResult<'_> {
+    pub fn is_pending(&self) -> bool {
+        matches!(self, Self::Pending)
+    }
+
+    pub fn is_running(&self) -> bool {
+        matches!(self, Self::Running)
+    }
+
+    pub fn did_succeed(&self) -> bool {
+        matches!(self, Self::Succeeded)
+    }
+
+    pub fn did_fail(&self) -> bool {
+        matches!(self, Self::Failed)
+        // matches!(self, CompletionResult::Failed(_))
+    }
 }
 
 #[async_trait::async_trait]
@@ -116,9 +160,10 @@ pub enum Error {
 #[derive(Debug)]
 pub struct Node<I, O, L> {
     pub task_name: String,
-    pub short_task_name: String,
+    // pub short_task_name: String,
     pub label: L,
     pub created_at: Instant,
+    // TODO: should this all go into one rwlock?
     pub started_at: RwLock<Option<Instant>>,
     pub completed_at: RwLock<Option<Instant>>,
     pub state: RwLock<State<I, O>>,
@@ -133,9 +178,19 @@ impl<I, O, L> Hash for Node<I, O, L> {
     }
 }
 
-impl<I, O, L> std::fmt::Display for Node<I, O, L> {
+impl<I, O, L> std::fmt::Display for Node<I, O, L>
+where
+    I: std::fmt::Debug + Send + Sync + 'static,
+    O: std::fmt::Debug + Send + Sync + 'static,
+    L: std::fmt::Debug + Sync + 'static,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.short_task_name)
+        let arguments: Vec<_> = self
+            .dependencies()
+            .iter()
+            .map(|dep| dep.as_argument())
+            .collect();
+        write!(f, "{}({})", self.task_name, arguments.join(", "))
     }
 }
 
@@ -166,10 +221,12 @@ where
 {
     fn succeeded(&self) -> bool {
         // safety: panics if the lock is already held by the current thread.
-        matches!(*self.state.read().unwrap(), State::Succeeded(_))
+        self.state.read().unwrap().did_succeed()
+        // matches!(*self.state.read().unwrap(), State::Succeeded(_))
     }
 
-    fn fail(&self, err: Arc<dyn std::error::Error + Send + Sync + 'static>) {
+    // fn fail(&self, err: Arc<dyn std::error::Error + Send + Sync + 'static>) {
+    fn fail(&self, err: Box<dyn std::error::Error + Send + Sync + 'static>) {
         *self.state.write().unwrap() = State::Failed(err);
     }
 
@@ -179,7 +236,18 @@ where
             State::Pending(_) => CompletionResult::Pending,
             State::Running => CompletionResult::Running,
             State::Succeeded(_) => CompletionResult::Succeeded,
-            State::Failed(err) => CompletionResult::Failed(err.clone()),
+            State::Failed(_) => CompletionResult::Failed,
+            // State::Failed(err) => CompletionResult::Failed(&err),
+            // State::Failed(err) => CompletionResult::Failed(err.clone()),
+        }
+    }
+
+    fn as_argument(&self) -> String {
+        match &*self.state.read().unwrap() {
+            State::Pending(_) => "<pending>".to_string(),
+            State::Running => "<running>".to_string(),
+            State::Succeeded(value) => format!("{:?}", value),
+            State::Failed(_) => "<failed>".to_string(),
         }
     }
 
@@ -203,8 +271,6 @@ where
 
     async fn run(&self) {
         // get the inputs from the dependencies
-        let inputs = self.dependencies.inputs().unwrap();
-        println!("running task {self:?}({inputs:?})");
         let state = {
             let state = &mut *self.state.write().unwrap();
             if let State::Pending(_) = state {
@@ -221,6 +287,9 @@ where
             }
         };
         if let State::Pending(task) = state {
+            let inputs = self.dependencies.inputs().unwrap();
+            println!("running task {self}");
+
             // this will consume the task
             let result = task.run(inputs).await;
 
@@ -240,6 +309,48 @@ where
             };
         }
     }
+
+    // async fn run(&self) -> Option<Result<O>> {
+    //     // get the inputs from the dependencies
+    //     let inputs = self.dependencies.inputs().unwrap();
+    //     println!("running task {self:?}({inputs:?})");
+    //     let state = {
+    //         let state = &mut *self.state.write().unwrap();
+    //         if let State::Pending(_) = state {
+    //             self.started_at
+    //                 .write()
+    //                 .unwrap()
+    //                 .get_or_insert(Instant::now());
+    //
+    //             // returns owned previous value (pending task)
+    //             std::mem::replace(state, State::Running)
+    //         } else {
+    //             // already done
+    //             return None;
+    //         }
+    //     };
+    //     if let State::Pending(task) = state {
+    //         // this will consume the task
+    //         let result = task.run(inputs).await;
+    //         Some(result);
+    //
+    //         // self.completed_at
+    //         //     .write()
+    //         //     .unwrap()
+    //         //     .get_or_insert(Instant::now());
+    //         //
+    //         // // check if task was already marked as failed
+    //         // let state = &mut *self.state.write().unwrap();
+    //         // if !matches!(state, State::Running { .. }) {
+    //         //     return;
+    //         // }
+    //         // *state = match result {
+    //         //     Ok(output) => State::Succeeded(output),
+    //         //     Err(err) => State::Failed(err.into()),
+    //         // };
+    //     }
+    //     None
+    // }
 
     fn label(&self) -> &L {
         &self.label

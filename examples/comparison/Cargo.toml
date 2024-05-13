@@ -9,6 +9,7 @@ color-eyre = "0"
 
 # async
 tokio = { version = "1", features = ["full"] }
+async-trait = "0"
 
 async_dag = "0"
-taski = { path = "../../" }
+taski = { path = "../../" , features = ["render"]}

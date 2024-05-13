@@ -1,0 +1,26 @@
+<svg width="2000" height="245" viewBox="0 0 2000 245" xmlns="http://www.w3.org/2000/svg">
+<rect x="0" y="0" width="1802" height="40" opacity="1" fill="#C8C8C8" stroke="none"/>
+<text x="1" y="5" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
+Total
+</text>
+<rect x="359" y="40" width="32" height="40" opacity="1" fill="#5AFF00" stroke="none"/>
+<text x="360" y="45" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
+Input(1)()
+</text>
+<rect x="858" y="80" width="27" height="40" opacity="1" fill="#FF00BB" stroke="none"/>
+<text x="859" y="85" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
+Input(2)()
+</text>
+<rect x="1174" y="120" width="23" height="40" opacity="1" fill="#92FF00" stroke="none"/>
+<text x="1175" y="125" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
+Input(4)()
+</text>
+<rect x="1401" y="160" width="40" height="40" opacity="1" fill="#00F8FF" stroke="none"/>
+<text x="1402" y="165" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
+SumTwoNumbers(1, 2)
+</text>
+<rect x="1766" y="200" width="36" height="40" opacity="1" fill="#00FF07" stroke="none"/>
+<text x="1767" y="205" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
+SumTwoNumbers(3, 4)
+</text>
+</svg>

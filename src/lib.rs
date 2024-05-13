@@ -2,7 +2,6 @@
 
 pub mod dag;
 pub mod dependency;
-pub mod dfs;
 pub mod executor;
 pub mod policy;
 pub mod schedule;
@@ -94,13 +93,13 @@ mod tests {
     #[cfg(feature = "render")]
     macro_rules! test_result_file {
         ($suffix:expr) => {{
-            let manifest_path = std::path::PathBuf::from(std::env!("CARGO_MANIFEST_DIR"));
+            let manifest_dir = std::path::PathBuf::from(std::env!("CARGO_MANIFEST_DIR"));
             let function_name = function_name!();
             let function_name = function_name
                 .strip_suffix("::{{closure}}")
                 .unwrap_or(function_name);
             let test = format!("{}_{}", function_name, $suffix);
-            manifest_path.join("src/tests/").join(test)
+            manifest_dir.join("src/tests/").join(test)
         }};
     }
 
@@ -153,23 +152,27 @@ mod tests {
         impl Policy<TaskLabel> for CustomPolicy {
             fn arbitrate(
                 &self,
-                exec: &dyn executor::Executor<TaskLabel>,
-            ) -> Option<TaskRef<TaskLabel>> {
-                let running_durations: Vec<_> = exec
-                    .running()
-                    .iter()
-                    .filter_map(|t| t.started_at())
-                    .map(|start_time| start_time.elapsed())
-                    .collect();
-                dbg!(running_durations);
-                dbg!(exec.running().len());
-                let num_combines = exec
-                    .running()
-                    .iter()
-                    .filter(|t: &&TaskRef<TaskLabel>| *t.label() == TaskLabel::Combine)
-                    .count();
-                dbg!(num_combines);
-                exec.ready().next()
+                // exec: &dyn executor::Executor<TaskLabel>,
+                ready: &[dag::Idx],
+                exec: &crate::schedule::Schedule<TaskLabel>,
+                // ) -> Option<TaskRef<TaskLabel>> {
+            ) -> Option<crate::dag::Idx> {
+                todo!()
+                // let running_durations: Vec<_> = exec
+                //     .running()
+                //     .iter()
+                //     .filter_map(|t| t.started_at())
+                //     .map(|start_time| start_time.elapsed())
+                //     .collect();
+                // dbg!(running_durations);
+                // dbg!(exec.running().len());
+                // let num_combines = exec
+                //     .running()
+                //     .iter()
+                //     .filter(|t: &&TaskRef<TaskLabel>| *t.label() == TaskLabel::Combine)
+                //     .count();
+                // dbg!(num_combines);
+                // exec.ready().next()
             }
         }
 

@@ -1,11 +1,13 @@
+use petgraph as pg;
+
 use crate::{
-    dag::{Traversal, DAG},
+    dag::{self, Dfs, DAG},
     dependency::Dependencies,
-    dfs::Dfs,
     task,
 };
 
-use std::collections::{HashMap, HashSet};
+use pg::{graph::NodeIndex, Direction::*};
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -23,10 +25,13 @@ pub trait Schedulable<L> {
     fn succeeded(&self) -> bool;
 
     /// Fails the schedulable task.
-    fn fail(&self, err: Arc<dyn std::error::Error + Send + Sync + 'static>);
+    // fn fail(&self, err: Arc<dyn std::error::Error + Send + Sync + 'static>);
+    fn fail(&self, err: Box<dyn std::error::Error + Send + Sync + 'static>);
 
     /// The result state of the task after completion.
     fn state(&self) -> task::CompletionResult;
+
+    fn as_argument(&self) -> String;
 
     /// The creation time of the task.
     fn created_at(&self) -> Instant;
@@ -150,29 +155,34 @@ impl<L> Eq for dyn Schedulable<L> + '_ {}
 impl<L> Eq for dyn Schedulable<L> + Send + Sync + '_ {}
 
 /// A task schedule based on a DAG of task nodes.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
+// pub struct Schedule<'a, L> {
 pub struct Schedule<L> {
-    pub dependencies: DAG<task::Ref<L>>,
-    pub dependants: DAG<task::Ref<L>>,
+    pub dag: DAG<task::Ref<L>>,
+    // pub dag: DAG<&'a task::Ref<L>>,
+    // pub dependency_dag: DAG<task::Ref<L>>,
+    // pub dependants_dag: DAG<task::Ref<L>>,
 }
 
 impl<L> Default for Schedule<L> {
+    // impl<'a, L> Default for Schedule<'a, L> {
     fn default() -> Self {
         Self {
-            dependencies: HashMap::new(),
-            dependants: HashMap::new(),
+            dag: DAG::default(),
+            // dependency_dag: DAG::default(),
+            // dependants_dag: DAG::default(),
         }
     }
 }
 
-impl<L> std::fmt::Debug for Schedule<L> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Schedule")
-            .field("dependencies", &self.dependencies)
-            .field("dependants", &self.dependants)
-            .finish()
-    }
-}
+// impl<L> std::fmt::Debug for Schedule<L> {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         f.debug_struct("Schedule")
+//             .field("dependencies", &self.dependencies)
+//             .field("dependants", &self.dependants)
+//             .finish()
+//     }
+// }
 
 impl<L> Schedule<L> {
     /// Add a new task to the graph.
@@ -181,43 +191,82 @@ impl<L> Schedule<L> {
     /// already been added to the task graph (Arc<TaskNode>)
     pub fn add_node<I, O, T, D>(&mut self, task: T, deps: D, label: L) -> Arc<task::Node<I, O, L>>
     where
-        T: task::Task<I, O> + std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
+        T: task::Task<I, O> + std::fmt::Debug + Send + Sync + 'static,
         D: Dependencies<I, L> + Send + Sync + 'static,
         I: std::fmt::Debug + Send + Sync + 'static,
         O: std::fmt::Debug + Send + Sync + 'static,
         L: std::fmt::Debug + Sync + 'static,
     {
+        let index = self.dag.node_count();
         let node = Arc::new(task::Node {
-            task_name: format!("{task}"),
-            short_task_name: format!("{task:?}"),
+            task_name: task.name(),
             label,
             created_at: Instant::now(),
             started_at: RwLock::new(None),
             completed_at: RwLock::new(None),
             state: RwLock::new(task::State::Pending(Box::new(task))),
             dependencies: Box::new(deps),
-            index: self.dependencies.len(),
+            index,
         });
 
-        // check for circles here
-        let mut seen: HashSet<task::Ref<L>> = HashSet::new();
-        let mut stack: Vec<task::Ref<L>> = vec![node.clone()];
+        // let my_node = pg::graph::Node::de {
+        //     node.clone(),
+        //     next: [pg::graph::EdgeIndex::end(), pg::graph::EdgeIndex::end()],
+        // };
+        // let node_idx = NodeIndex::new(self.nodes.len());
+        // // check for max capacity, except if we use usize
+        // assert!(<Ix as IndexType>::max().index() == !0 || NodeIndex::end() != node_idx);
+        // self.nodes.push(node);
 
-        while let Some(node) = stack.pop() {
-            if !seen.insert(node.clone()) {
-                continue;
-            }
-            let dependencies = self.dependencies.entry(node.clone()).or_default();
+        // TODO: return the index instead of the node here?
+        // that way we always have to query the schedule for
+        // introspection, but that could be fine as long as
+        // ownership allows, but i suppose it could be bad for
+        // losing type information
 
-            for dep in node.dependencies() {
-                let dependants = self.dependants.entry(dep.clone()).or_default();
-                dependants.insert(node.clone());
-                dependencies.insert(dep.clone());
-                stack.push(dep);
-            }
+        // add node
+        let node_index = self.dag.add_node(node.clone());
+        assert_eq!(node_index.index(), index);
+        // let node = self.dag.node_weight_mut(index).unwrap();
+        // Arc::get_mut(node).unwrap().index = idx;
+
+        // add edges to dependencies
+        for dep in node.dependencies() {
+            self.dag.add_edge(dep.index().into(), node_index, ());
+            // todo: get or insert dep here
+            // let dep_idx = self.dag.node_weight(dep);
+
+            // self.dependants_dag.add_node(node.clone());
+            // self.dependency_dag.insert(dep.clone());
         }
 
+        // // check for circles here
+        // let mut seen: HashSet<task::Ref<L>> = HashSet::new();
+        // let mut stack: Vec<task::Ref<L>> = vec![node.clone()];
+        //
+        // while let Some(node) = stack.pop() {
+        //     if !seen.insert(node.clone()) {
+        //         continue;
+        //     }
+        //     let dependencies = self.dependency_dag.entry(node.clone()).or_default();
+        //
+        //     for dep in node.dependencies() {
+        //         let dependants = self.dependants_dag.entry(dep.clone()).or_default();
+        //         dependants.insert(node.clone());
+        //         dependencies.insert(dep.clone());
+        //         stack.push(dep);
+        //     }
+        // }
+
         node
+    }
+
+    pub fn add_input<O>(&mut self, input: O, label: L) -> Arc<task::Node<(), O, L>>
+    where
+        O: std::fmt::Debug + Send + Sync + 'static,
+        L: std::fmt::Debug + Sync + 'static,
+    {
+        self.add_node(task::Input::from(input), (), label)
     }
 
     /// Marks all dependants as failed.
@@ -226,84 +275,145 @@ impl<L> Schedule<L> {
     ///
     /// TODO: is this correct and sufficient?
     /// TODO: really test this...
-    pub fn fail_dependants<'a>(&'a mut self, root: &'a task::Ref<L>, dependencies: bool) {
+    // pub fn fail_dependants<'a>(&'a mut self, root: &'a task::Ref<L>, dependencies: bool) {
+    pub fn fail_dependants<'a>(&'a mut self, root: dag::Idx, dependencies: bool) {
         let mut queue = vec![root];
         let mut processed = HashSet::new();
         processed.insert(root);
 
-        while let Some(task) = queue.pop() {
+        while let Some(idx) = queue.pop() {
             dbg!(&queue);
             dbg!(&processed);
 
             // fail all dependants
             let mut new_processed = vec![];
-            let dependants = self.dependants.traverse(task, None, |dep: &&task::Ref<L>| {
-                matches!(dep.state(), task::CompletionResult::Pending) && !processed.contains(dep)
+
+            let dependants = pg::visit::Reversed(&self.dag);
+
+            // // check if we can get the neighbors
+            // use pg::visit::IntoNeighborsDirected;
+            //
+            // self.dag
+            //     .neighbors_directed(task.index().into(), Incoming);
+            // dependants.neighbors_directed(task.index().into(), Incoming);
+
+            // let dfs = Dfs::new(&dependants, task);
+            // let dfs = Dfs::new(&dependants, task.index().into());
+            let dfs = Dfs::new(&dependants, idx);
+            // let dfs = dfs.filter(|dep: &task::Ref<L>| {
+            let mut dfs = dfs.filter(|dep_idx: &NodeIndex<usize>| {
+                let dep = &self.dag[*dep_idx];
+                dep.state().is_pending() && !processed.contains(dep_idx)
             });
-            for (_, dependant) in dependants {
+
+            while let Some(dep_idx) = dfs.next(&self.dag) {
                 // todo: link to failed dependency
                 // if processed.insert(dependant) {
-                new_processed.push(dependant);
-                dependant.fail(Arc::new(task::Error::FailedDependency));
+                let dependant = &self.dag[dep_idx];
+                // new_processed.push(dependant);
+
+                dependant.fail(Box::new(task::Error::FailedDependency));
                 // processed.insert(dependant);
-                queue.push(dependant);
-                // }
+
+                new_processed.push(dep_idx);
+                queue.push(dep_idx);
+
+                //
             }
+
+            // let dependants = self
+            //     .dependants_dag
+            //     .traverse(task, None, |dep: &&task::Ref<L>| {
+            //         matches!(dep.state(), task::CompletionResult::Pending)
+            //             && !processed.contains(dep)
+            //     });
+            // for (_, dependant) in dependants {
+            //     // todo: link to failed dependency
+            //     // if processed.insert(dependant) {
+            //     new_processed.push(dependant);
+            //     dependant.fail(Arc::new(task::Error::FailedDependency));
+            //     // processed.insert(dependant);
+            //     queue.push(dependant);
+            //     // }
+            // }
             // fail all dependencies of task
             if dependencies {
                 // fail all dependencies
-                let dependencies = self
-                    .dependencies
-                    .traverse(task, None, |dep: &&task::Ref<L>| {
-                        matches!(dep.state(), task::CompletionResult::Pending)
-                            && !processed.contains(task)
-                    });
-                for (_, dependency) in dependencies {
-                    // fail dependency
-                    // if processed.insert(dependency) {
-                    dependency.fail(Arc::new(task::Error::FailedDependency));
-                    // processed.insert(dependency);
-                    queue.push(dependency);
-                    new_processed.push(dependency);
-                    // }
-                }
+                todo!();
+                // let dependencies =
+                //     self.dependency_dag
+                //         .traverse(task, None, |dep: &&task::Ref<L>| {
+                //             matches!(dep.state(), task::CompletionResult::Pending)
+                //                 && !processed.contains(task)
+                //         });
+                // for (_, dependency) in dependencies {
+                //     // fail dependency
+                //     // if processed.insert(dependency) {
+                //     dependency.fail(Arc::new(task::Error::FailedDependency));
+                //     // processed.insert(dependency);
+                //     queue.push(dependency);
+                //     new_processed.push(dependency);
+                //     // }
+                // }
             }
 
             processed.extend(new_processed);
         }
     }
 
-    /// Iterator over the immediate dependencies of a task
-    pub fn dependencies<'a>(
-        &'a self,
-        task: &'a task::Ref<L>,
-    ) -> Dfs<'a, task::Ref<L>, impl Fn(&&task::Ref<L>) -> bool> {
-        self.dependencies.traverse(task, Some(1), |_| true)
+    // pub fn ready(&self) -> impl Iterator<Item = NodeIndex<usize>> {
+    pub fn ready(&self) -> impl Iterator<Item = dag::Idx> + '_ {
+        self.dag.node_indices().filter(|idx| self.dag[*idx].ready())
     }
 
-    /// Iterator over the immediate dependants of a task
-    pub fn dependants<'a>(
-        &'a self,
-        task: &'a task::Ref<L>,
-    ) -> Dfs<'a, task::Ref<L>, impl Fn(&&task::Ref<L>) -> bool> {
-        self.dependants.traverse(task, Some(1), |_| true)
+    pub fn running(&self) -> impl Iterator<Item = dag::Idx> + '_ {
+        self.dag.node_indices().filter(|idx| self.dag[*idx].ready())
     }
 
-    /// Iterator over all recursive dependencies of a task
-    pub fn rec_dependencies<'a>(
-        &'a self,
-        task: &'a task::Ref<L>,
-    ) -> Dfs<'a, task::Ref<L>, impl Fn(&&task::Ref<L>) -> bool> {
-        self.dependencies.traverse(task, None, |_| true)
-    }
+    // pub fn done(&self) -> bool {
+    //     // schedule is
+    //     self.ready().next().is_none()
+    //     // use task::CompletionResult::*;
+    //     // self.dag
+    //     //     .node_indices()
+    //     //     .all(|idx| matches!(self.dag[idx].state(), Failed | Succeeded))
+    // }
 
-    /// Iterator over all recursive dependants of a task
-    pub fn rec_dependants<'a>(
-        &'a self,
-        task: &'a task::Ref<L>,
-    ) -> Dfs<'a, task::Ref<L>, impl Fn(&&task::Ref<L>) -> bool> {
-        self.dependants.traverse(task, None, |_| true)
-    }
+    // /// Iterator over the immediate dependencies of a task
+    // pub fn dependencies<'a>(
+    //     &'a self,
+    //     task: &'a task::Ref<L>,
+    // // ) -> Dfs<'a, task::Ref<L>, impl Fn(&&task::Ref<L>) -> bool> {
+    // ) -> pg::graph::Neighbors<'_, (), usize> {
+    //     self.dag.neighbors_directed(task.index().into(), Incoming)
+    //     // self.dependency_dag.traverse(task, Some(1), |_| true)
+    // }
+    //
+    // /// Iterator over the immediate dependants of a task
+    // pub fn dependants<'a>(
+    //     &'a self,
+    //     task: &'a task::Ref<L>,
+    // // ) -> Dfs<'a, task::Ref<L>, impl Fn(&&task::Ref<L>) -> bool> {
+    // ) -> pg::graph::Neighbors<'_, (), usize> {
+    //     self.dag.neighbors_directed(task.index().into(), Outgoing)
+    //     // self.dependants_dag.traverse(task, Some(1), |_| true)
+    // }
+
+    // /// Iterator over all recursive dependencies of a task
+    // pub fn rec_dependencies<'a>(
+    //     &'a self,
+    //     task: &'a task::Ref<L>,
+    // ) -> Dfs<'a, task::Ref<L>, impl Fn(&&task::Ref<L>) -> bool> {
+    //     self.dependency_dag.traverse(task, None, |_| true)
+    // }
+    //
+    // /// Iterator over all recursive dependants of a task
+    // pub fn rec_dependants<'a>(
+    //     &'a self,
+    //     task: &'a task::Ref<L>,
+    // ) -> Dfs<'a, task::Ref<L>, impl Fn(&&task::Ref<L>) -> bool> {
+    //     self.dependants_dag.traverse(task, None, |_| true)
+    // }
 }
 
 #[cfg(feature = "render")]
@@ -316,6 +426,8 @@ pub mod render {
         std_shapes::shapes,
         topo::layout::VisualGraph,
     };
+    use petgraph as pg;
+    use pg::Direction::*;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -372,7 +484,14 @@ pub mod render {
             let mut handles: HashMap<Arc<dyn Schedulable<L>>, layout::adt::dag::NodeHandle> =
                 HashMap::new();
 
-            for (task, deps) in &self.dependencies {
+            // for (task, deps) in &self.dependency_dag {
+            for idx in self.dag.node_indices() {
+                let task = &self.dag[idx];
+                let deps = self
+                    .dag
+                    .neighbors_directed(idx, Incoming)
+                    .map(|idx| &self.dag[idx]);
+
                 let dest_handle = *handles
                     .entry(task.clone())
                     .or_insert_with(|| graph.add_node(node(task)));

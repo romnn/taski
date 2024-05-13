@@ -15,12 +15,13 @@ pub struct Task {
 #[derive(Debug)]
 pub struct Trace<T> {
     pub start_time: Instant,
-    pub tasks: Mutex<HashMap<T, Task>>,
+    pub tasks: HashMap<T, Task>,
+    // pub tasks: Mutex<HashMap<T, Task>>,
 }
 
 impl<T> Default for Trace<T>
 where
-    T: std::hash::Hash + std::fmt::Display + std::fmt::Debug + std::cmp::Ord + Eq,
+    T: std::hash::Hash + std::fmt::Debug + std::cmp::Ord + Eq,
 {
     #[inline]
     fn default() -> Self {
@@ -37,7 +38,8 @@ impl<T> Trace<T>
     pub fn new() -> Self {
         Self {
             start_time: Instant::now(),
-            tasks: Mutex::new(HashMap::new()),
+            tasks: HashMap::new(),
+            // tasks: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -126,9 +128,10 @@ pub mod render {
                 s.finish()
             }
 
-            let tasks = self.tasks.lock().await;
+            // let tasks = self.tasks.lock().await;
 
-            let mut bars: Vec<_> = tasks
+            let mut bars: Vec<_> = self
+                .tasks
                 .iter()
                 .filter_map(|(k, t)| match (t.start, t.end) {
                     (Some(s), Some(e)) => {
