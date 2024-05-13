@@ -2,9 +2,6 @@ use std::collections::HashMap;
 
 use std::time::Instant;
 
-use futures::lock::Mutex;
-// use tokio::sync::Mutex;
-
 #[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Task {
     pub label: String,
@@ -16,7 +13,6 @@ pub struct Task {
 pub struct Trace<T> {
     pub start_time: Instant,
     pub tasks: HashMap<T, Task>,
-    // pub tasks: Mutex<HashMap<T, Task>>,
 }
 
 impl<T> Default for Trace<T>
@@ -29,17 +25,13 @@ where
     }
 }
 
-impl<T> Trace<T>
-// where
-// T: std::hash::Hash + std::fmt::Display + std::fmt::Debug + std::cmp::Ord + Eq,
-{
+impl<T> Trace<T> {
     #[must_use]
     #[inline]
     pub fn new() -> Self {
         Self {
             start_time: Instant::now(),
             tasks: HashMap::new(),
-            // tasks: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -49,6 +41,7 @@ pub mod render {
     use plotters::prelude::*;
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
+    use std::time::Duration;
 
     #[allow(clippy::cast_sign_loss)]
     #[allow(clippy::cast_possible_truncation)]
@@ -158,10 +151,14 @@ pub mod render {
                 .map(|b| b.begin + b.length)
                 .max()
                 .unwrap_or_default();
+
+            // compute the total duration of the trace.
+            let total_duration = Duration::from_nanos(latest.try_into().unwrap());
+
             bars.push(Bar {
                 begin: 0,
                 length: latest,
-                label: "Total".to_string(),
+                label: format!("{:?} Total", total_duration),
                 color: RGBColor(200, 200, 200),
                 id: None,
             });
