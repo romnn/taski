@@ -5,17 +5,20 @@
 [<img alt="crates.io" src="https://img.shields.io/crates/v/taski">](https://crates.io/crates/taski)
 [<img alt="docs.rs" src="https://img.shields.io/docsrs/taski/latest?label=docs.rs">](https://docs.rs/taski)
 
-#### TODO (generic3)
+#### TODO
 
+- add support for async closures / functions
+- use logging
 - add examples of competitor libs
-- use petgraph for the graph representation
 - add more tests for different policies
 - add embedme
 - add documentation
 - add one more example
 - remove the trace mutex? should not be required
 - add a builder for the scheduler
-- add a schedule trait
+- NO: add a schedule trait
+
+- DONE: use petgraph for the graph representation
 
 #### Design decisions
 

@@ -29,9 +29,18 @@ pub trait Schedulable<L> {
     fn fail(&self, err: Box<dyn std::error::Error + Send + Sync + 'static>);
 
     /// The result state of the task after completion.
-    fn state(&self) -> task::CompletionResult;
+    fn state(&self) -> task::State;
 
     fn as_argument(&self) -> String;
+
+    fn signature(&self) -> String {
+        let arguments: Vec<_> = self
+            .dependencies()
+            .iter()
+            .map(|dep| dep.as_argument())
+            .collect();
+        format!("{}({})", self.name(), arguments.join(", "))
+    }
 
     /// The creation time of the task.
     fn created_at(&self) -> Instant;
@@ -47,7 +56,7 @@ pub trait Schedulable<L> {
     fn completed_at(&self) -> Option<Instant>;
 
     /// Unique index of the task node in the DAG graph
-    fn index(&self) -> usize;
+    fn index(&self) -> dag::Idx;
 
     /// Run the schedulable task using the dependencies' outputs as input.
     ///
@@ -61,10 +70,10 @@ pub trait Schedulable<L> {
     async fn run(&self);
 
     /// Returns the name of the schedulable task
-    fn name(&self) -> String;
+    fn name(&self) -> &str;
 
     /// Returns the short name of the schedulable task
-    fn short_name(&self) -> String;
+    // fn short_name(&self) -> String;
 
     /// Returns the label of this task.
     fn label(&self) -> &L;
@@ -100,25 +109,28 @@ pub trait Schedulable<L> {
 
 impl<L> std::fmt::Debug for dyn Schedulable<L> + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name())
+        write!(f, "{}", self.signature())
+        // write!(f, "{}", self.name())
     }
 }
 
 impl<L> std::fmt::Debug for dyn Schedulable<L> + Send + Sync + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name())
+        write!(f, "{}", self.signature())
+        // write!(f, "{}", self.name())
     }
 }
 
 impl<L> std::fmt::Display for dyn Schedulable<L> + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.short_name())
+        write!(f, "{}", self.signature())
     }
 }
 
 impl<L> std::fmt::Display for dyn Schedulable<L> + Send + Sync + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.short_name())
+        write!(f, "{}", self.signature())
+        // write!(f, "{}", self.name())
     }
 }
 
@@ -189,25 +201,35 @@ impl<L> Schedule<L> {
     ///
     /// Dependencies for the task must be references to tasks that have
     /// already been added to the task graph (Arc<TaskNode>)
-    pub fn add_node<I, O, T, D>(&mut self, task: T, deps: D, label: L) -> Arc<task::Node<I, O, L>>
+    pub fn add_node<I, O, T, D>(
+        &mut self,
+        // task: impl Into<T>,
+        task: T,
+        deps: D,
+        label: L,
+    ) -> Arc<task::Node<I, O, L>>
     where
-        T: task::Task<I, O> + std::fmt::Debug + Send + Sync + 'static,
+        T: task::Task<I, O> + Send + Sync + 'static,
+        // T: task::Task<I, O> + std::fmt::Debug + Send + Sync + 'static,
         D: Dependencies<I, L> + Send + Sync + 'static,
         I: std::fmt::Debug + Send + Sync + 'static,
         O: std::fmt::Debug + Send + Sync + 'static,
         L: std::fmt::Debug + Sync + 'static,
     {
-        let index = self.dag.node_count();
-        let node = Arc::new(task::Node {
-            task_name: task.name(),
-            label,
-            created_at: Instant::now(),
-            started_at: RwLock::new(None),
-            completed_at: RwLock::new(None),
-            state: RwLock::new(task::State::Pending(Box::new(task))),
-            dependencies: Box::new(deps),
-            index,
-        });
+        let index = dag::Idx::new(self.dag.node_count());
+        // let task = task.into();
+        let node = Arc::new(task::Node::new(task, deps, label, index));
+        // let node = Arc::new(task::Node {
+        //     task_name: task.name(),
+        //     label,
+        //     created_at: Instant::now(),
+        //     // started_at: RwLock::new(None),
+        //     // completed_at: RwLock::new(None),
+        //     // state: RwLock::new(task::InternalState::Pending(Box::new(task))),
+        //     inner: RwLock::new(task::NodeInner::new(task)),
+        //     dependencies: Box::new(deps),
+        //     index,
+        // });
 
         // let my_node = pg::graph::Node::de {
         //     node.clone(),
@@ -226,7 +248,7 @@ impl<L> Schedule<L> {
 
         // add node
         let node_index = self.dag.add_node(node.clone());
-        assert_eq!(node_index.index(), index);
+        assert_eq!(node_index, index);
         // let node = self.dag.node_weight_mut(index).unwrap();
         // Arc::get_mut(node).unwrap().index = idx;
 
@@ -258,6 +280,35 @@ impl<L> Schedule<L> {
         //     }
         // }
 
+        node
+    }
+
+    pub fn add_closure<C, F, I, O, D>(
+        &mut self,
+        closure: C,
+        deps: D,
+        label: L,
+    ) -> Arc<task::Node<I, O, L>>
+    where
+        // T: task::BoxedClosure<I, O> + Send + Sync + 'static,
+        // C: task::UserClosure<F, I, O> + Send + Sync + 'static,
+        C: task::UserClosure<F, I, O> + Send + Sync + 'static,
+        // F: futures::Future<Output = task::Result<O>>,
+        F: futures::Future<Output = task::Result<O>> + Send + Sync + 'static,
+
+        // T: task::Task<I, O> + std::fmt::Debug + Send + Sync + 'static,
+        D: Dependencies<I, L> + Send + Sync + 'static,
+        I: std::fmt::Debug + Send + Sync + 'static,
+        O: std::fmt::Debug + Send + Sync + 'static,
+        L: std::fmt::Debug + Sync + 'static,
+    {
+        let index = dag::Idx::new(self.dag.node_count());
+        let node = Arc::new(task::Node::closure(closure, deps, label, index));
+        let node_index = self.dag.add_node(node.clone());
+        assert_eq!(node_index, index);
+        for dep in node.dependencies() {
+            self.dag.add_edge(dep.index().into(), node_index, ());
+        }
         node
     }
 

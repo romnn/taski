@@ -127,7 +127,7 @@ where
             }
 
             // dbg!(self.schedule.ready().collect::<Vec<_>>());
-            dbg!(&ready);
+            // dbg!(&ready);
 
             // start running ready tasks
             while let Some(idx) = self.policy.arbitrate(&ready, &self.schedule) {
@@ -138,13 +138,13 @@ where
                 let task = Arc::clone(&self.schedule.dag[idx]);
                 // let trace = self.trace.clone();
 
-                println!("adding {}", &task);
+                println!("adding {:?}", &task);
                 // let running = self.running.clone();
 
                 // todo: how would this look if we put the tracing and running stuff
                 // before and after when the complete in the scheduler loop?
                 running_tasks.push(Box::pin(async move {
-                    println!("running {}", &task);
+                    println!("running {:?}", &task);
 
                     // safety: panics if the lock is already held by the current thread.
                     // running.write().unwrap().insert(p.clone());
@@ -170,7 +170,7 @@ where
                     (
                         idx,
                         trace::Task {
-                            label: task.short_name(),
+                            label: task.name().to_string(),
                             start: Some(start_time),
                             end: Some(end_time),
                         },
@@ -191,7 +191,11 @@ where
                 // self.trace.tasks.lock().await.insert(idx.index(), traced);
 
                 let completed = &self.schedule.dag[idx];
-                println!("task {} completed: {:?}", &completed, completed.state());
+                println!(
+                    "task {} completed with status: {:?}",
+                    &completed,
+                    completed.state()
+                );
                 // self.running.write().unwrap().remove(&completed);
 
                 let _states = self
@@ -206,15 +210,15 @@ where
                 // dbg!(_states);
 
                 match completed.state() {
-                    task::CompletionResult::Pending | task::CompletionResult::Running { .. } => {
+                    task::State::Pending | task::State::Running { .. } => {
                         unreachable!("completed task state is invalid");
                     }
                     // task::CompletionResult::Failed(_err) => {
-                    task::CompletionResult::Failed => {
+                    task::State::Failed => {
                         // fail fast
                         self.schedule.fail_dependants(idx, true);
                     }
-                    task::CompletionResult::Succeeded => {}
+                    task::State::Succeeded => {}
                 }
                 // assert!(matches!(State::Pending(_), &completed));
 
@@ -244,14 +248,14 @@ where
                 let ready_dependants = dependants.filter_map(|dep_idx| {
                     let dep = &self.schedule.dag[dep_idx];
                     // dbg!(dep);
-                    println!(
-                        "dependant {} has dependencies: {:?}",
-                        dep,
-                        dep.dependencies()
-                            .iter()
-                            .map(|d| d.state())
-                            .collect::<Vec<_>>()
-                    );
+                    // println!(
+                    //     "dependant {} has dependencies: {:?}",
+                    //     dep,
+                    //     dep.dependencies()
+                    //         .iter()
+                    //         .map(|d| d.state())
+                    //         .collect::<Vec<_>>()
+                    // );
                     if dep.ready() {
                         Some(dep_idx)
                     } else {

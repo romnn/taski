@@ -1,15 +1,18 @@
 use crate::{
+    dag,
     dependency::{Dependencies, Dependency},
     schedule::Schedulable,
     task,
 };
 
+use futures::Future;
 use std::hash::{Hash, Hasher};
+use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-fn summarize(s: impl AsRef<str>, max_length: usize) -> String {
-    let s = s.as_ref();
+fn summarize(s: &dyn std::fmt::Debug, max_length: usize) -> String {
+    let s = format!("{:?}", s);
     if s.len() > max_length {
         format!(
             "{}...{}",
@@ -25,21 +28,91 @@ pub type Ref<L> = Arc<dyn Schedulable<L>>;
 
 pub type Result<O> = std::result::Result<O, Box<dyn std::error::Error + Send + Sync + 'static>>;
 
-#[derive(Debug)]
-pub enum State<I, O> {
+// pub type Fut<O> = Pin<Box<dyn Future<Output = Result<O>> + Send>>;
+// pub type Fut<O> = Pin<Box<dyn Future<Output = Result<O>> + Unpin + Send>>;
+pub type Fut<O> = Pin<Box<dyn Future<Output = Result<O>> + Send>>;
+
+// #[async_trait::async_trait]
+
+pub trait UserClosure<F, I, O>: std::ops::FnOnce(I) -> F + Unpin
+where
+    // I: 'static,
+    F: Future<Output = Result<O>>,
+{
+}
+
+impl<C, F, I, O> UserClosure<F, I, O> for C
+where
+    C: std::ops::FnOnce(I) -> F + Unpin,
+    F: Future<Output = Result<O>>,
+    // I: 'static,
+{
+}
+
+// struct ClosureTask<I, O> {
+//     // core::pin::Pin<Box<dyn core::future::Future<Output = Result<O> > + core::marker::Send+'async_trait>
+// }
+//
+// // #[async_trait
+// impl<I, O> Task<I, O> for ClosureTask<I, O> {
+//     fn run(self: Box<Self>, input:I) -> Pin<Box<dyn Future<Output = Result<O>> + Send> {
+//         todo!()
+//     }
+// }
+
+pub trait BoxedClosure<I, O>: std::ops::FnOnce(I) -> Fut<O> + Unpin
+// where
+//     F: Future<Output = Result<O>>,
+{
+    // Running a task consumes it, which does guarantee that tasks
+    // may only run exactly once.
+    // async fn run(self: Box<Self>, input: I) -> Result<O>;
+}
+
+impl<C, I, O> BoxedClosure<I, O> for C where
+    C: std::ops::FnOnce(I) -> Fut<O> + Unpin // F: Future<Output = Result<O>>,
+{
+}
+
+pub(crate) enum PendingTask<I, O> {
+    Task(Box<dyn Task<I, O> + Send + Sync>),
+    Closure(Box<dyn BoxedClosure<I, O> + Unpin + Send + Sync>),
+}
+
+// #[async_trait::async_trait]
+// impl<I, O> Task<I, O> for PendingTask<I, O> {
+impl<I, O> PendingTask<I, O> {
+    async fn run(self, input: I) -> Result<O> {
+        match self {
+            Self::Task(task) => task.run(input).await,
+            Self::Closure(closure) => {
+                let fut = closure(input); // .boxed();
+                let fut = Box::pin(fut);
+                // let fut = Pin::new(fut);
+                // let fut = Pin::new(Box::new(closure(input)));
+                fut.await
+            }
+        }
+    }
+}
+
+// could change this to either closure or type here?
+pub(crate) enum InternalState<I, O> {
     /// Task is pending and waiting to be run
-    Pending(Box<dyn Task<I, O> + Send + Sync + 'static>),
+    // Pending(Box<dyn Task<I, O> + Send + Sync + 'static>),
+    Pending(PendingTask<I, O>),
     /// Task is running
     Running,
     /// Task succeeded with the desired output
     Succeeded(O),
     /// Task failed with an error
+    #[allow(unused)]
     Failed(Box<dyn std::error::Error + Send + Sync + 'static>),
     // Failed(Arc<dyn std::error::Error + Send + Sync + 'static>),
 }
 
-impl<I, O> State<I, O> {
-    // impl CompletionResult<'_> {
+impl<I, O> InternalState<I, O> {
+    #[allow(unused)]
     pub fn is_pending(&self) -> bool {
         matches!(self, Self::Pending(_))
     }
@@ -52,13 +125,14 @@ impl<I, O> State<I, O> {
         matches!(self, Self::Succeeded(_))
     }
 
+    #[allow(unused)]
     pub fn did_fail(&self) -> bool {
         matches!(self, Self::Failed(_))
     }
 }
 
 #[derive(Debug, Clone)]
-pub enum CompletionResult {
+pub enum State {
     /// Task is pending
     Pending,
     /// Task is running
@@ -67,12 +141,9 @@ pub enum CompletionResult {
     Succeeded,
     /// Task failed with an error
     Failed,
-    // Failed(&'a (dyn std::error::Error + Send + Sync + 'static)),
-    // Failed(Box<dyn std::error::Error + Send + Sync + 'static>),
-    // Failed(Arc<dyn std::error::Error + Send + Sync + 'static>),
 }
 
-impl CompletionResult {
+impl State {
     // impl CompletionResult<'_> {
     pub fn is_pending(&self) -> bool {
         matches!(self, Self::Pending)
@@ -93,13 +164,15 @@ impl CompletionResult {
 }
 
 #[async_trait::async_trait]
-pub trait Task<I, O>: std::fmt::Debug {
+// pub(crate) trait Task<I, O>: std::fmt::Debug {
+pub trait Task<I, O> {
     /// Running a task consumes it, which does guarantee that tasks
     /// may only run exactly once.
     async fn run(self: Box<Self>, input: I) -> Result<O>;
 
     fn name(&self) -> String {
-        format!("{self:?}")
+        "<unnamed>".to_string()
+        // format!("{self:?}")
     }
 }
 
@@ -131,15 +204,19 @@ where
     async fn run(self: Box<Self>, _input: ()) -> Result<O> {
         Ok(self.0)
     }
+
+    fn name(&self) -> String {
+        format!("{}", self)
+    }
 }
 
 impl<O> std::fmt::Display for Input<O>
 where
-    O: std::fmt::Display,
+    O: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let short_value = summarize(format!("{}", &self.0), 20);
-        f.debug_tuple("TaskInput").field(&short_value).finish()
+        let short_value = summarize(&self.0, 20);
+        write!(f, "Input({})", short_value)
     }
 }
 
@@ -157,18 +234,106 @@ pub enum Error {
 ///
 /// `TaskNodes` are only generic (static) over the inputs and outputs, since that is of
 /// importance for using a task node as a dependency for another task
-#[derive(Debug)]
+#[derive()]
+pub(crate) struct NodeInner<I, O> {
+    pub(crate) started_at: Option<Instant>,
+    pub(crate) completed_at: Option<Instant>,
+    pub(crate) state: InternalState<I, O>,
+}
+
+impl<I, O> NodeInner<I, O> {
+    pub fn new<T>(task: T) -> Self
+    where
+        T: Task<I, O> + Send + Sync + 'static,
+    {
+        let task = PendingTask::Task(Box::new(task));
+        let state = InternalState::Pending(task);
+        Self {
+            started_at: None,
+            completed_at: None,
+            state,
+        }
+    }
+
+    pub fn closure<C, F>(closure: C) -> Self
+    where
+        C: UserClosure<F, I, O> + Send + Sync + 'static,
+        F: Future<Output = Result<O>> + Send + Sync + 'static,
+        I: Send + 'static,
+        // I: Send + Sync + 'static,
+    {
+        // todo!();
+        // let boxed_closure = |inputs: I| {
+        //     closure
+        // }
+        // fn boxed_closure(closure: UserClosure<F, I, O>) -> Fut<O> {
+        //     closure
+        // }
+
+        // let closure = boxed_closure(closure);
+        let closure = move |inputs: I| {
+            // box the future
+            // Box::pin(async move { closure(inputs).await }) as Fut<O> // Box<dyn Future<Output>>
+            Box::pin(async move { closure(inputs).await }) as Fut<O> // Box<dyn Future<Output>>
+        };
+        // let future = Box::new(closure);
+        // let future = Box::pin(Box::new(closure));
+        let task = PendingTask::Closure(Box::new(closure));
+        let state = InternalState::Pending(task);
+        Self {
+            started_at: None,
+            completed_at: None,
+            state,
+        }
+    }
+}
+
+#[derive()]
 pub struct Node<I, O, L> {
     pub task_name: String,
     // pub short_task_name: String,
     pub label: L,
     pub created_at: Instant,
-    // TODO: should this all go into one rwlock?
-    pub started_at: RwLock<Option<Instant>>,
-    pub completed_at: RwLock<Option<Instant>>,
-    pub state: RwLock<State<I, O>>,
     pub dependencies: Box<dyn Dependencies<I, L> + Send + Sync>,
-    pub index: usize,
+    pub index: dag::Idx,
+
+    pub(crate) inner: RwLock<NodeInner<I, O>>,
+}
+
+impl<I, O, L> Node<I, O, L> {
+    pub fn new<T, D>(task: T, deps: D, label: L, index: dag::Idx) -> Self
+    where
+        T: task::Task<I, O> + Send + Sync + 'static,
+        D: Dependencies<I, L> + Send + Sync + 'static,
+    {
+        Self {
+            task_name: task.name(),
+            label,
+            created_at: Instant::now(),
+            inner: RwLock::new(task::NodeInner::new(task)),
+            dependencies: Box::new(deps),
+            index,
+        }
+    }
+
+    pub fn closure<F, C, D>(closure: C, deps: D, label: L, index: dag::Idx) -> Self
+    where
+        C: UserClosure<F, I, O> + Send + Sync + 'static,
+        F: Future<Output = Result<O>> + Send + Sync + 'static,
+        I: Send + 'static,
+        // F: Future<Output = Result<O>>,
+        // T: task::BoxedClosure<I, O> + Send + Sync + 'static,
+        D: Dependencies<I, L> + Send + Sync + 'static,
+    {
+        Self {
+            task_name: "<closure>".to_string(),
+            label,
+            created_at: Instant::now(),
+            inner: RwLock::new(task::NodeInner::closure(closure)),
+            dependencies: Box::new(deps),
+            index,
+        }
+    }
 }
 
 impl<I, O, L> Hash for Node<I, O, L> {
@@ -185,12 +350,13 @@ where
     L: std::fmt::Debug + Sync + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let arguments: Vec<_> = self
-            .dependencies()
-            .iter()
-            .map(|dep| dep.as_argument())
-            .collect();
-        write!(f, "{}({})", self.task_name, arguments.join(", "))
+        // let arguments: Vec<_> = self
+        //     .dependencies()
+        //     .iter()
+        //     .map(|dep| dep.as_argument())
+        //     .collect();
+        // write!(f, "{}({})", self.task_name, arguments.join(", "))
+        write!(f, "{}", self.signature())
     }
 }
 
@@ -221,33 +387,37 @@ where
 {
     fn succeeded(&self) -> bool {
         // safety: panics if the lock is already held by the current thread.
-        self.state.read().unwrap().did_succeed()
+        let inner = self.inner.read().unwrap();
+        inner.state.did_succeed()
         // matches!(*self.state.read().unwrap(), State::Succeeded(_))
     }
 
     // fn fail(&self, err: Arc<dyn std::error::Error + Send + Sync + 'static>) {
     fn fail(&self, err: Box<dyn std::error::Error + Send + Sync + 'static>) {
-        *self.state.write().unwrap() = State::Failed(err);
+        let mut inner = self.inner.write().unwrap();
+        inner.state = InternalState::Failed(err);
     }
 
-    fn state(&self) -> CompletionResult {
+    fn state(&self) -> State {
         // safety: panics if the lock is already held by the current thread.
-        match &*self.state.read().unwrap() {
-            State::Pending(_) => CompletionResult::Pending,
-            State::Running => CompletionResult::Running,
-            State::Succeeded(_) => CompletionResult::Succeeded,
-            State::Failed(_) => CompletionResult::Failed,
+        let inner = self.inner.read().unwrap();
+        match inner.state {
+            InternalState::Pending(_) => State::Pending,
+            InternalState::Running => State::Running,
+            InternalState::Succeeded(_) => State::Succeeded,
+            InternalState::Failed(_) => State::Failed,
             // State::Failed(err) => CompletionResult::Failed(&err),
             // State::Failed(err) => CompletionResult::Failed(err.clone()),
         }
     }
 
     fn as_argument(&self) -> String {
-        match &*self.state.read().unwrap() {
-            State::Pending(_) => "<pending>".to_string(),
-            State::Running => "<running>".to_string(),
-            State::Succeeded(value) => format!("{:?}", value),
-            State::Failed(_) => "<failed>".to_string(),
+        let inner = self.inner.read().unwrap();
+        match inner.state {
+            InternalState::Pending(_) => "<pending>".to_string(),
+            InternalState::Running => "<running>".to_string(),
+            InternalState::Succeeded(ref value) => format!("{:?}", value),
+            InternalState::Failed(_) => "<failed>".to_string(),
         }
     }
 
@@ -257,57 +427,79 @@ where
 
     fn started_at(&self) -> Option<Instant> {
         // safety: panics if the lock is already held by the current thread.
-        *self.started_at.read().unwrap()
+        let inner = self.inner.read().unwrap();
+        inner.started_at
     }
 
     fn completed_at(&self) -> Option<Instant> {
         // safety: panics if the lock is already held by the current thread.
-        *self.completed_at.read().unwrap()
+        let inner = self.inner.read().unwrap();
+        inner.completed_at
     }
 
-    fn index(&self) -> usize {
+    fn index(&self) -> dag::Idx {
         self.index
     }
 
     async fn run(&self) {
-        // get the inputs from the dependencies
-        let state = {
-            let state = &mut *self.state.write().unwrap();
-            if let State::Pending(_) = state {
-                self.started_at
-                    .write()
-                    .unwrap()
-                    .get_or_insert(Instant::now());
+        // let state = {
+        //     let mut inner = self.inner.write().unwrap();
+        //     if let InternalState::Pending(_) = inner.state {
+        //         // set the state to running
+        //         // returns owned previous value (pending task)
+        //         std::mem::replace(&mut inner.state, InternalState::Running)
+        //     } else {
+        //         // already done
+        //         return;
+        //     }
+        // };
+        // let InternalState::Pending(task) = state else {
+        //     return;
+        // };
 
-                // returns owned previous value (pending task)
-                std::mem::replace(state, State::Running)
+        let task = {
+            let mut inner = self.inner.write().unwrap();
+
+            if let InternalState::Pending(_) = inner.state {
+                // set the state to running
+                // this takes ownership of the task
+                let task = std::mem::replace(&mut inner.state, InternalState::Running);
+                let InternalState::Pending(task) = task else {
+                    return;
+                };
+                task
             } else {
-                // already done
+                // already ran
                 return;
             }
         };
-        if let State::Pending(task) = state {
-            let inputs = self.dependencies.inputs().unwrap();
-            println!("running task {self}");
 
-            // this will consume the task
-            let result = task.run(inputs).await;
+        // get the inputs from the dependencies
+        let inputs = self.dependencies.inputs().unwrap();
 
-            self.completed_at
-                .write()
-                .unwrap()
-                .get_or_insert(Instant::now());
-
-            // check if task was already marked as failed
-            let state = &mut *self.state.write().unwrap();
-            if !matches!(state, State::Running { .. }) {
-                return;
-            }
-            *state = match result {
-                Ok(output) => State::Succeeded(output),
-                Err(err) => State::Failed(err.into()),
-            };
+        {
+            let mut inner = self.inner.write().unwrap();
+            inner.started_at.get_or_insert(Instant::now());
         }
+
+        println!("running task {self}");
+
+        // this will consume the task
+        let result = task.run(inputs).await;
+
+        let mut inner = self.inner.write().unwrap();
+        inner.completed_at.get_or_insert(Instant::now());
+
+        // check if task was already marked as failed
+        // let state = &mut *self.inner.write().unwrap();
+        assert!(inner.state.is_running());
+        // if !inner.state.is_running() {
+        //     return;
+        // }
+        inner.state = match result {
+            Ok(output) => InternalState::Succeeded(output),
+            Err(err) => InternalState::Failed(err.into()),
+        };
     }
 
     // async fn run(&self) -> Option<Result<O>> {
@@ -356,13 +548,14 @@ where
         &self.label
     }
 
-    fn name(&self) -> String {
-        format!("{self:?}")
+    fn name(&self) -> &str {
+        &self.task_name
+        // format!("{self:?}")
     }
 
-    fn short_name(&self) -> String {
-        format!("{self}")
-    }
+    // fn short_name(&self) -> String {
+    //     format!("{self}")
+    // }
 
     fn dependencies(&self) -> Vec<Arc<dyn Schedulable<L>>> {
         self.dependencies.to_vec()
@@ -377,8 +570,9 @@ where
 {
     fn output(&self) -> Option<O> {
         // safety: panics if the lock is already held by the current thread.
-        match &*self.state.read().unwrap() {
-            State::Succeeded(output) => Some(output.clone()),
+        let inner = self.inner.read().unwrap();
+        match inner.state {
+            InternalState::Succeeded(ref output) => Some(output.clone()),
             _ => None,
         }
     }
@@ -455,12 +649,17 @@ impl Tuple for () {
     fn into_product(self) -> Self::Product {}
 }
 
+// TODO: add documentation
 macro_rules! task {
     ($name:ident: $( $type:ident ),*) => {
         #[allow(non_snake_case)]
         #[async_trait::async_trait]
         pub trait $name<$( $type ),*, O>: std::fmt::Debug {
             async fn run(self: Box<Self>, $($type: $type),*) -> Result<O>;
+
+            fn name(&self) -> String {
+                format!("{self:?}")
+            }
         }
 
         #[allow(non_snake_case)]
@@ -475,9 +674,151 @@ macro_rules! task {
                 let ($( $type ),*,) = input;
                 $name::run(self, $( $type ),*).await
             }
+
+            fn name(&self) -> String {
+                format!("{self:?}")
+            }
         }
+
+        // #[allow(non_snake_case)]
+        // #[async_trait::async_trait]
+        // impl<T, $( $type ),*, O> $name<$( $type ),*, O> for T
+        // where
+        //     // T: $name<$( $type ),*, O> + Send + 'static,
+        //     T: FnOnce($( $type ),*) -> O + std::fmt::Debug + Send + 'static,
+        //     $($type: std::fmt::Debug + Send + 'static),*
+        // {
+        //     // async fn run(self: Box<Self>, input: ($( $type ),*,)) -> Result<O> {
+        //     async fn run(self: Box<Self>, input: ($( $type ),*,)) -> Result<O> {
+        //         // destructure to tuple and call
+        //         let ($( $type ),*,) = input;
+        //         todo!();
+        //         // $name::run(self, $( $type ),*).await
+        //     }
+        // }
+
+
+        // #[allow(non_snake_case)]
+        // #[derive(Debug)]
+        // pub struct $name<$( $type ),*, O> {
+        //     // async fn run(self: Box<Self>, $($type: $type),*) -> Result<O>;
+        //     inner: FnOnce
+        // }
+
+
+        // #[allow(non_snake_case)]
+        // #[async_trait::async_trait]
+        // impl<T, $( $type ),*, O> Task<($( $type ),*,), O> for T
+        // where
+        //     T: FnOnce($( $type ),*) -> O + Send + 'static,
+        //     // T: $name<$( $type ),*, O> + Send + 'static,
+        //     $($type: std::fmt::Debug + Send + 'static),*
+        // {
+        //     async fn run(self: Box<Self>, input: ($( $type ),*,)) -> Result<O> {
+        //         // destructure to tuple and call
+        //         // let ($( $type ),*,) = input;
+        //         // $name::run(self, $( $type ),*).await
+        //         todo!();
+        //     }
+        // }
+
+
+        // impl<T, F> Task2<T> for F
+        // where
+        //     F: FnMut(&T) -> T,
+        // {
+        //     fn foo(&mut self, x: &T) -> T {
+        //         self(x)
+        //     }
+        // }
     }
 }
+
+// trait Closure2<T1, T2, O>: FnOnce(T1, T2) -> Result<O> + Send + 'static {}
+
+// impl<T1, T2, O> Closure2<T1, T2, O> for dyn FnOnce(T1, T2) -> O + std::fmt::Debug + Send + 'static {}
+
+// pub struct TaskClosure2<F, T1, T2, O>
+// pub struct TaskClosure2<F, T1, T2, O>
+// struct Marker {}
+// struct Closure2<Marker, T1, T2, O>
+// // where
+// // F: FnOnce(T1, T2) -> O + Send + 'static,
+// {
+//     // inner: F,
+//     inner: Box<dyn FnOnce(T1, T2) -> O + Send + 'static>,
+//     t1: std::marker::PhantomData<(T1, T2, O)>,
+//     marker: std::marker::PhantomData<Marker>,
+// }
+
+// #[allow(non_snake_case)]
+// #[async_trait::async_trait]
+// pub trait ClosureTask2<$( $type ),*, O>: std::fmt::Debug {
+//     async fn run(self: Box<Self>, $($type: $type),*) -> Result<O>;
+// }
+
+// struct Test {}
+//
+// impl std::ops::FnOnce<(String, String)> for Test {
+//     type Output = String;
+//
+//     fn call_once(self, args: (String, String)) -> Self::Output {
+//         "".to_string()
+//     }
+// }
+
+// #[allow(non_snake_case)]
+// #[async_trait::async_trait]
+// // impl<C, T1, T2, O> Task2<T1, T2, O> for Closure2<T1, T2, O>
+// impl<T1, T2, O> Task<(T1, T2), O> for Closure2<Marker, T1, T2, O>
+// // impl<T1, T2, O> Task<(T1, T2), O> for Box<dyn Closure2<T1, T2, O>>
+// where
+//     // C: Closure2<T1, T2, O>,
+//     // F: FnOnce(T1, T2) -> O + Send + 'static,
+//     // T: TaskClosure2<T1, T2, O>,
+//     // T: FnOnce(T1, T2) -> O + Send + 'static,
+//     // T: $name<$( $type ),*, O> + Send + 'static,
+//     T1: std::fmt::Debug + Send + 'static,
+//     T2: std::fmt::Debug + Send + 'static,
+//     O: std::fmt::Debug + Send + 'static,
+// {
+//     async fn run(self: Box<Self>, input: (T1, T2)) -> Result<O> {
+//         // destructure to tuple and call
+//         // let ($( $type ),*,) = input;
+//         // $name::run(self, $( $type ),*).await
+//         let (t1, t2) = input;
+//         todo!();
+//         // self.call(t1, t2).await
+//         // <self as FnOnce>::call_once(self, (t1, t2))
+//         // self(t1, t2)
+//     }
+// }
+
+// #[allow(non_snake_case)]
+// #[async_trait::async_trait]
+// impl<C, T1, T2, O> Task<(T1, T2), O> for C
+// // impl<T1, T2, O> Task<(T1, T2), O> for Box<dyn Closure2<T1, T2, O>>
+// where
+//     C: Closure2<T1, T2, O>,
+//     // F: FnOnce(T1, T2) -> O + Send + 'static,
+//     // T: TaskClosure2<T1, T2, O>,
+//     // T: FnOnce(T1, T2) -> O + Send + 'static,
+//     // T: $name<$( $type ),*, O> + Send + 'static,
+//     T1: std::fmt::Debug + Send + 'static,
+//     T2: std::fmt::Debug + Send + 'static,
+//     O: std::fmt::Debug + Send + 'static,
+// {
+//     async fn run(self: Box<Self>, input: (T1, T2)) -> Result<O> {
+//         // destructure to tuple and call
+//         // let ($( $type ),*,) = input;
+//         // $name::run(self, $( $type ),*).await
+//         // todo!();
+//         let (t1, t2) = input;
+//         // self.call(t1, t2).await
+//         // <self as FnOnce>::call_once(self, (t1, t2))
+//         self(t1, t2)
+//     }
+// }
 
 macro_rules! product {
     ($H:expr) => { Product($H, ()) };
@@ -541,6 +882,20 @@ macro_rules! generics {
         }
     };
 }
+
+// #[allow(non_snake_case)]
+//         #[async_trait::async_trait]
+//         impl<T, $( $type ),*, O> Task<($( $type ),*,), O> for T
+//         where
+//             T: $name<$( $type ),*, O> + Send + 'static,
+//             $($type: std::fmt::Debug + Send + 'static),*
+//         {
+//             async fn run(self: Box<Self>, input: ($( $type ),*,)) -> Result<O> {
+//                 // destructure to tuple and call
+//                 let ($( $type ),*,) = input;
+//                 $name::run(self, $( $type ),*).await
+//             }
+//         }
 
 task!(Task1: T1);
 task!(Task2: T1, T2);

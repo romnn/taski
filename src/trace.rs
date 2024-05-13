@@ -158,7 +158,7 @@ pub mod render {
             bars.push(Bar {
                 begin: 0,
                 length: latest,
-                label: format!("{:?} Total", total_duration),
+                label: format!("Total ({:.2?})", total_duration),
                 color: RGBColor(200, 200, 200),
                 id: None,
             });

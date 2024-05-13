@@ -1,7 +1,7 @@
 #![allow(clippy::just_underscores_and_digits, clippy::used_underscore_binding)]
 
 use std::path::PathBuf;
-use taski::{Dependency, PolicyExecutor, Schedule};
+use taski::{Dependency, PolicyExecutor, Schedule, TaskResult};
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(std::env!("CARGO_MANIFEST_DIR"))
@@ -22,6 +22,12 @@ async fn render<P, L>(executor: &PolicyExecutor<P, L>) {
         .unwrap();
 }
 
+// async fn sum_two_numbers(lhs: i32, rhs: i32) -> TaskResult<i32> {
+async fn sum_two_numbers(input: (i32, i32)) -> TaskResult<i32> {
+    let (lhs, rhs) = input;
+    Ok(lhs + rhs)
+}
+
 #[derive(Debug)]
 struct SumTwoNumbers {}
 
@@ -31,7 +37,7 @@ struct SumTwoNumbers {}
 /// The last generic argument is the output type.
 #[async_trait::async_trait]
 impl taski::Task2<i32, i32, i32> for SumTwoNumbers {
-    async fn run(self: Box<Self>, lhs: i32, rhs: i32) -> taski::TaskResult<i32> {
+    async fn run(self: Box<Self>, lhs: i32, rhs: i32) -> TaskResult<i32> {
         Ok(lhs + rhs)
     }
 }
@@ -43,10 +49,27 @@ pub async fn run() -> Option<i32> {
     let _4 = graph.add_input(4, ());
 
     // sets _1 and _2 as _3's dependencies (arguments)
-    let _3 = graph.add_node(SumTwoNumbers {}, (_1, _2), ());
+    // let _3 = graph.add_node(SumTwoNumbers {}, (_1, _2), ());
+    // let _3 = graph.add_node(SumTwoNumbers {}, (_1, _2), ());
+    // let _3 = graph.add_closure(|(a, b)| Ok(a + b), (_1, _2), ());
+    let c = 0;
+    let closure = move |(a, b)| async move { Ok(a + b + c) };
+    let closure2 = async { 0 };
+
+    fn assert_unpin<C, A, F>(c: C)
+    where
+        C: FnOnce(A) -> F,
+        F: Unpin,
+    {
+    }
+    // assert_unpin(closure);
+
+    let _3 = graph.add_closure(closure, (_1, _2), ());
+    // let _3 = graph.add_closure(Box::new(|a, b| Ok(a + b)), (_1, _2), ());
 
     // sets _3 and _4 as _7's dependencies (arguments)
-    let _7 = graph.add_node(SumTwoNumbers {}, (_3, _4), ());
+    let _7 = graph.add_closure(sum_two_numbers, (_3, _4), ());
+    // let _7 = graph.add_node(SumTwoNumbers {}, (_3, _4), ());
 
     let mut executor = PolicyExecutor::fifo(graph);
     executor.run().await;
