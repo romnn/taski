@@ -1,3 +1,4 @@
+#![allow(warnings)]
 #![allow(clippy::just_underscores_and_digits, clippy::used_underscore_binding)]
 
 use std::path::PathBuf;
@@ -10,7 +11,7 @@ fn manifest_dir() -> PathBuf {
 // Optional: render the DAG graph and an execution trace.
 //
 // NOTE: this requires the "render" feature.
-async fn render<P, L>(executor: &PolicyExecutor<P, L>) {
+fn render<P, L>(executor: &PolicyExecutor<P, L>) {
     executor
         .schedule
         .render_to(manifest_dir().join("taski_graph.svg"))
@@ -18,13 +19,10 @@ async fn render<P, L>(executor: &PolicyExecutor<P, L>) {
     executor
         .trace
         .render_to(manifest_dir().join("taski_trace.svg"))
-        .await
         .unwrap();
 }
 
 async fn sum_two_numbers(lhs: i32, rhs: i32) -> TaskResult<i32> {
-    // async fn sum_two_numbers(input: (i32, i32)) -> TaskResult<i32> {
-    // let (lhs, rhs) = input;
     Ok(lhs + rhs)
 }
 
@@ -52,10 +50,8 @@ pub async fn run() -> Option<i32> {
     // let _3 = graph.add_node(SumTwoNumbers {}, (_1, _2), ());
     // let _3 = graph.add_node(SumTwoNumbers {}, (_1, _2), ());
     // let _3 = graph.add_closure(|(a, b)| Ok(a + b), (_1, _2), ());
-    let c = 0;
     // let closure = move |(a, b)| async move { Ok(a + b + c) };
-    let closure = move |a, b| async move { Ok(a + b + c) };
-    let closure2 = async { 0 };
+    let closure = move |a, b| async move { Ok(a + b) };
 
     fn assert_unpin<C, A, F>(c: C)
     where
@@ -83,7 +79,7 @@ pub async fn run() -> Option<i32> {
     let mut executor = PolicyExecutor::fifo(graph);
     executor.run().await;
 
-    render(&executor).await;
+    render(&executor);
 
     _7.output()
 }

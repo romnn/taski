@@ -204,7 +204,7 @@ async fn main() -> eyre::Result<()> {
     let trace_file = source_file
         .update_stem(|stem| format!("{stem}_trace"))
         .with_extension("svg");
-    executor.trace.render_to(&trace_file).await?;
+    executor.trace.render_to(&trace_file)?;
 
     // copy to example dir so we can test
     let output_path = source_file.with_extension("mp3");

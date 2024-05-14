@@ -74,14 +74,14 @@ pub mod render {
         /// # Errors
         /// - If the trace is too large to be rendered.
         /// - If writing to the specified output path fails.
-        pub async fn render_to(&self, path: impl AsRef<std::path::Path>) -> Result<(), Error> {
+        pub fn render_to(&self, path: impl AsRef<std::path::Path>) -> Result<(), Error> {
             let file = std::fs::OpenOptions::new()
                 .write(true)
                 .truncate(true)
                 .create(true)
                 .open(path.as_ref())?;
             let mut writer = std::io::BufWriter::new(file);
-            self.render_to_writer(&mut writer).await
+            self.render_to_writer(&mut writer)
         }
 
         /// Render the execution trace as an SVG image.
@@ -89,8 +89,8 @@ pub mod render {
         /// # Errors
         /// - If the trace is too large to be rendered.
         /// - If writing to the specified output path fails.
-        pub async fn render_to_writer(&self, mut writer: impl std::io::Write) -> Result<(), Error> {
-            let content = self.render().await?;
+        pub fn render_to_writer(&self, mut writer: impl std::io::Write) -> Result<(), Error> {
+            let content = self.render()?;
             writer.write_all(content.as_bytes())?;
             Ok(())
         }
@@ -101,7 +101,7 @@ pub mod render {
         /// - If the trace is too large to be rendered.
         #[allow(clippy::cast_possible_truncation)]
         #[allow(clippy::cast_precision_loss)]
-        pub async fn render(&self) -> Result<String, Error> {
+        pub fn render(&self) -> Result<String, Error> {
             #[derive(Default, Debug, Clone)]
             struct Bar<T> {
                 begin: u128,
@@ -158,7 +158,7 @@ pub mod render {
             bars.push(Bar {
                 begin: 0,
                 length: latest,
-                label: format!("Total ({:.2?})", total_duration),
+                label: format!("Total ({total_duration:.2?})"),
                 color: RGBColor(200, 200, 200),
                 id: None,
             });
