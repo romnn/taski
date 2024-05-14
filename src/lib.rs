@@ -12,7 +12,7 @@ pub use crate::dependency::Dependency;
 pub use executor::PolicyExecutor;
 pub use policy::Policy;
 pub use schedule::Schedule;
-pub use task::{Input as TaskInput, Ref as TaskRef, Result as TaskResult, Task1, Task2};
+pub use task::{Error, Input as TaskInput, Ref as TaskRef, Result as TaskResult, Task1, Task2};
 
 #[cfg(test)]
 mod tests {
@@ -44,6 +44,30 @@ mod tests {
         }};
     }
 
+    #[cfg(feature = "render")]
+    fn should_render() -> bool {
+        std::env::var("RENDER")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str()
+            == "yes"
+    }
+
+    #[allow(unused)]
+    fn assert_unpin<C, A, F>(c: &C)
+    where
+        C: FnOnce(A) -> F,
+        F: Unpin,
+    {
+    }
+
+    #[allow(unused)]
+    fn assert_closure<C, I, O>(c: &C)
+    where
+        C: task::Closure<I, O>,
+    {
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_scheduler() -> eyre::Result<()> {
         #[derive(Clone, Debug)]
@@ -56,11 +80,11 @@ mod tests {
             Combine,
         }
 
-        impl std::fmt::Display for Identity {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{:?}", &self)
-            }
-        }
+        // impl std::fmt::Display for Identity {
+        //     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        //         write!(f, "{:?}", &self)
+        //     }
+        // }
 
         #[async_trait::async_trait]
         impl Task1<String, String> for Identity {
@@ -73,11 +97,11 @@ mod tests {
         #[derive(Clone, Debug)]
         struct Combine {}
 
-        impl std::fmt::Display for Combine {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{:?}", &self)
-            }
-        }
+        // impl std::fmt::Display for Combine {
+        //     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        //         write!(f, "{:?}", &self)
+        //     }
+        // }
 
         #[async_trait::async_trait]
         impl Task2<String, String, String> for Combine {
@@ -119,23 +143,13 @@ mod tests {
 
         let mut graph = Schedule::default();
 
-        let input_node =
-            graph.add_node(TaskInput::from("George".to_string()), (), TaskLabel::Input);
+        let i0 = graph.add_input("George".to_string(), TaskLabel::Input);
 
-        let base_node = graph.add_node(identity.clone(), (input_node,), TaskLabel::Identity);
-        let parent1_node =
-            graph.add_node(identity.clone(), (base_node.clone(),), TaskLabel::Identity);
-        let parent2_node =
-            graph.add_node(identity.clone(), (base_node.clone(),), TaskLabel::Identity);
-        let result_node = graph.add_node(
-            combine.clone(),
-            (parent1_node, parent2_node),
-            TaskLabel::Combine,
-        );
+        let n0 = graph.add_node(identity.clone(), (i0,), TaskLabel::Identity);
+        let n1 = graph.add_node(identity.clone(), (n0.clone(),), TaskLabel::Identity);
+        let n2 = graph.add_node(identity.clone(), (n0.clone(),), TaskLabel::Identity);
+        let result_node = graph.add_node(combine.clone(), (n1, n2), TaskLabel::Combine);
         // dbg!(&graph);
-
-        #[cfg(feature = "render")]
-        graph.render_to(test_result_file!("graph.svg"))?;
 
         let mut executor = PolicyExecutor::custom(graph, CustomPolicy::default());
 
@@ -143,7 +157,15 @@ mod tests {
         executor.run().await;
 
         #[cfg(feature = "render")]
-        executor.trace.render_to(test_result_file!("trace.svg"))?;
+        if should_render() {
+            let path = test_result_file!("graph.svg");
+            println!("rendering graph to {}", path.display());
+            executor.schedule.render_to(path)?;
+
+            let path = test_result_file!("trace.svg");
+            println!("rendering trace to {}", path.display());
+            executor.trace.render_to(path)?;
+        }
 
         // debug the graph now
         // dbg!(&executor.schedule);

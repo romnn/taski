@@ -46,6 +46,7 @@ denylist = ["default"]
 # downcast-trait = "0"
 # lazy_static = "1"
 thiserror = "1"
+log = "0"
 petgraph = { version = "0", features = ["graphmap", "stable_graph"] }
 async-trait = "0"
 futures = "0.3"

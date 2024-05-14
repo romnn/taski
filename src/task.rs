@@ -26,6 +26,65 @@ fn summarize(s: &dyn std::fmt::Debug, max_length: usize) -> String {
 
 pub type Ref<L> = Arc<dyn Schedulable<L>>;
 
+// pub trait ResultTrait: std::error::Error + Send + Sync + 'static {}
+
+pub struct Error(pub Box<dyn std::error::Error + Send + Sync + 'static>);
+
+impl Error {
+    pub fn new<E>(error: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        Error(Box::new(error))
+    }
+}
+
+impl std::fmt::Debug for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
+
+    #[allow(deprecated)]
+    fn description(&self) -> &str {
+        self.0.description()
+    }
+
+    #[allow(deprecated)]
+    fn cause(&self) -> Option<&dyn std::error::Error> {
+        self.0.cause()
+    }
+
+    // fn provide<'a>(&'a self, request: &mut Request<'a>) {
+    //     self.0.provide(request)
+    // }
+}
+
+impl From<Box<dyn std::error::Error + Send + Sync + 'static>> for Error {
+    fn from(error: Box<dyn std::error::Error + Send + Sync + 'static>) -> Self {
+        Self(error)
+    }
+}
+
+// impl<E> From<E> for Error
+// where
+//     E: std::error::Error + Send + Sync + 'static,
+// {
+//     fn from(value: E) -> Self {}
+// }
+
+// pub type Result<O> = std::result::Result<O, Error>;
 pub type Result<O> = std::result::Result<O, Box<dyn std::error::Error + Send + Sync + 'static>>;
 
 pub type Fut<O> = Pin<Box<dyn Future<Output = Result<O>> + Send>>;
@@ -61,7 +120,7 @@ pub(crate) enum InternalState<I, O> {
     Succeeded(O),
     /// Task failed with an error
     #[allow(unused)]
-    Failed(Box<dyn std::error::Error + Send + Sync + 'static>),
+    Failed(Error),
 }
 
 impl<I, O> InternalState<I, O> {
@@ -147,11 +206,11 @@ impl<O> From<O> for Input<O> {
 /// All that this implementation does is return a shared
 /// reference to the task input.
 #[async_trait::async_trait]
-impl<O> Task<(), O> for Input<O>
+impl<O> Task0<O> for Input<O>
 where
     O: std::fmt::Debug + Send + 'static,
 {
-    async fn run(self: Box<Self>, _input: ()) -> Result<O> {
+    async fn run(self: Box<Self>) -> Result<O> {
         Ok(self.0)
     }
 
@@ -168,12 +227,6 @@ where
         let value = summarize(&self.0, 20);
         write!(f, "Input({value})")
     }
-}
-
-#[derive(thiserror::Error, Debug, Clone, PartialEq)]
-pub enum Error {
-    #[error("task dependency failed")]
-    FailedDependency,
 }
 
 /// A task node in the task graph.
@@ -297,7 +350,7 @@ where
         inner.state.did_succeed()
     }
 
-    fn fail(&self, err: Box<dyn std::error::Error + Send + Sync + 'static>) {
+    fn fail(&self, err: Error) {
         let mut inner = self.inner.write().unwrap();
         inner.state = InternalState::Failed(err);
     }
@@ -366,7 +419,7 @@ where
             inner.started_at.get_or_insert(Instant::now());
         }
 
-        println!("running task {self}");
+        // println!("running task {self}");
 
         // this will consume the task
         let result = task.run(inputs).await;
@@ -377,7 +430,7 @@ where
         assert!(inner.state.is_running());
         inner.state = match result {
             Ok(output) => InternalState::Succeeded(output),
-            Err(err) => InternalState::Failed(err),
+            Err(err) => InternalState::Failed(err.into()),
         };
     }
 
@@ -412,7 +465,11 @@ where
 // TODO: add documentation
 macro_rules! task {
     ($name:ident: $( $type:ident ),*) => {
-        #[allow(non_snake_case, clippy::too_many_arguments)]
+        #[allow(
+            non_snake_case,
+            clippy::too_many_arguments,
+            clippy::module_name_repetitions,
+        )]
         #[async_trait::async_trait]
         pub trait $name<$( $type ),*, O>: std::fmt::Debug {
             async fn run(self: Box<Self>, $($type: $type),*) -> Result<O>;
@@ -451,10 +508,38 @@ task!(Task6: T1, T2, T3, T4, T5, T6);
 task!(Task7: T1, T2, T3, T4, T5, T6, T7);
 task!(Task8: T1, T2, T3, T4, T5, T6, T7, T8);
 
+#[async_trait::async_trait]
+#[allow(clippy::module_name_repetitions)]
+pub trait Task0<O>: std::fmt::Debug {
+    async fn run(self: Box<Self>) -> Result<O>;
+
+    fn name(&self) -> String {
+        format!("{self:?}")
+    }
+}
+
+#[async_trait::async_trait]
+impl<T, O> Task<(), O> for T
+where
+    T: Task0<O> + Send + 'static,
+{
+    async fn run(self: Box<Self>, _: ()) -> Result<O> {
+        Task0::run(self).await
+    }
+
+    fn name(&self) -> String {
+        format!("{self:?}")
+    }
+}
+
 // TODO: add documentation
 macro_rules! closure {
     ($name:ident: $( $type:ident ),*) => {
-        #[allow(non_snake_case, clippy::too_many_arguments)]
+        #[allow(
+            non_snake_case,
+            clippy::too_many_arguments,
+            clippy::module_name_repetitions,
+        )]
         #[async_trait::async_trait]
         pub trait $name<$( $type ),*, O> {
             fn run(self: Box<Self>, $($type: $type),*) -> Fut<O>;
@@ -496,3 +581,15 @@ closure!(Closure5: T1, T2, T3, T4, T5);
 closure!(Closure6: T1, T2, T3, T4, T5, T6);
 closure!(Closure7: T1, T2, T3, T4, T5, T6, T7);
 closure!(Closure8: T1, T2, T3, T4, T5, T6, T7, T8);
+
+/// Supports `|| async {}` closures without any arguments.
+#[async_trait::async_trait]
+impl<F, C, O> Closure<(), O> for C
+where
+    C: FnOnce() -> F,
+    F: Future<Output = Result<O>> + Send + 'static,
+{
+    fn run(self: Box<Self>, (): ()) -> Fut<O> {
+        Box::pin(self())
+    }
+}

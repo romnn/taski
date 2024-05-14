@@ -1,5 +1,4 @@
 .DS_Store
 
-*.svg
-*.png
+# ignore downloaded music
 *.mp3

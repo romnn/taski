@@ -5,6 +5,7 @@ use async_dag::Graph;
 // Example taken from: https://github.com/chubei-oppen/async_dag
 
 async fn sum(lhs: i32, rhs: i32) -> i32 {
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     lhs + rhs
 }
 

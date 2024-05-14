@@ -1,26 +1,26 @@
 <svg width="2000" height="245" viewBox="0 0 2000 245" xmlns="http://www.w3.org/2000/svg">
 <rect x="0" y="0" width="1802" height="40" opacity="1" fill="#C8C8C8" stroke="none"/>
 <text x="1" y="5" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
-Total
+Total (145.52µs)
 </text>
-<rect x="359" y="40" width="53" height="40" opacity="1" fill="#5AFF00" stroke="none"/>
-<text x="360" y="45" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
+<rect x="750" y="40" width="75" height="40" opacity="1" fill="#5AFF00" stroke="none"/>
+<text x="751" y="45" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
 Input(&quot;George&quot;)
 </text>
-<rect x="680" y="80" width="54" height="40" opacity="1" fill="#FF00BB" stroke="none"/>
-<text x="681" y="85" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
+<rect x="1104" y="80" width="55" height="40" opacity="1" fill="#FF00BB" stroke="none"/>
+<text x="1105" y="85" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
 Identity
 </text>
-<rect x="1042" y="120" width="46" height="40" opacity="1" fill="#00F8FF" stroke="none"/>
-<text x="1043" y="125" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
+<rect x="1375" y="120" width="20" height="40" opacity="1" fill="#00F8FF" stroke="none"/>
+<text x="1376" y="125" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
 Identity
 </text>
-<rect x="1241" y="160" width="100" height="40" opacity="1" fill="#92FF00" stroke="none"/>
-<text x="1242" y="165" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
+<rect x="1475" y="160" width="46" height="40" opacity="1" fill="#92FF00" stroke="none"/>
+<text x="1476" y="165" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
 Identity
 </text>
-<rect x="1714" y="200" width="88" height="40" opacity="1" fill="#00FF07" stroke="none"/>
-<text x="1715" y="205" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
+<rect x="1722" y="200" width="80" height="40" opacity="1" fill="#00FF07" stroke="none"/>
+<text x="1723" y="205" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
 Combine
 </text>
 </svg>

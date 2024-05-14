@@ -12,6 +12,15 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Possible scheduling errors.
+///
+/// This covers preconditions that cause tasks to fail.
+#[derive(thiserror::Error, Debug, Clone, PartialEq)]
+pub enum Error {
+    #[error("task dependency failed")]
+    FailedDependency,
+}
+
 /// Trait representing a schedulable task node.
 ///
 /// TaskNodes implement this trait.
@@ -26,7 +35,7 @@ pub trait Schedulable<L> {
     fn succeeded(&self) -> bool;
 
     /// Fails the schedulable task.
-    fn fail(&self, err: Box<dyn std::error::Error + Send + Sync + 'static>);
+    fn fail(&self, err: task::Error);
 
     /// The result state of the task after completion.
     fn state(&self) -> task::State;
@@ -286,7 +295,7 @@ impl<L> Schedule<L> {
                 let dependant = &self.dag[dep_idx];
                 // new_processed.push(dependant);
 
-                dependant.fail(Box::new(task::Error::FailedDependency));
+                dependant.fail(task::Error::new(Error::FailedDependency));
                 // processed.insert(dependant);
 
                 new_processed.push(dep_idx);

@@ -65,7 +65,7 @@ where
         loop {
             // check if we are done
             if running_tasks.is_empty() && ready.is_empty() {
-                println!("we are done");
+                log::debug!("completed: no more tasks");
                 break;
             }
 
@@ -75,10 +75,10 @@ where
                 ready.retain(|r| r != &idx);
 
                 let task = Arc::clone(&self.schedule.dag[idx]);
-                println!("adding {:?}", &task);
+                log::debug!("adding {:?}", &task);
 
                 running_tasks.push(Box::pin(async move {
-                    println!("running {:?}", &task);
+                    log::debug!("running {:?}", &task);
 
                     let start_time = Instant::now();
                     task.run().await;
@@ -98,8 +98,8 @@ where
                 self.trace.tasks.insert(idx.index(), traced);
 
                 let completed = &self.schedule.dag[idx];
-                println!(
-                    "task {} completed with status: {:?}",
+                log::debug!(
+                    "{} completed with status: {:?}",
                     &completed,
                     completed.state()
                 );
