@@ -34,20 +34,26 @@ pub type Fut<O> = Pin<Box<dyn Future<Output = Result<O>> + Send>>;
 
 // #[async_trait::async_trait]
 
-pub trait UserClosure<F, I, O>: std::ops::FnOnce(I) -> F + Unpin
-where
-    // I: 'static,
-    F: Future<Output = Result<O>>,
-{
+// pub trait Closure<F, I, O> {
+pub trait Closure<I, O> {
+    fn run(self: Box<Self>, inputs: I) -> Fut<O>;
+    // fn run(self, inputs: I) -> Fut<O>;
 }
 
-impl<C, F, I, O> UserClosure<F, I, O> for C
-where
-    C: std::ops::FnOnce(I) -> F + Unpin,
-    F: Future<Output = Result<O>>,
-    // I: 'static,
-{
-}
+// pub trait Closure<F, I, O>: std::ops::FnOnce(I) -> F + Unpin
+// where
+//     // I: 'static,
+//     F: Future<Output = Result<O>>,
+// {
+// }
+//
+// impl<C, F, I, O> Closure<F, I, O> for C
+// where
+//     C: std::ops::FnOnce(I) -> F + Unpin,
+//     F: Future<Output = Result<O>>,
+//     // I: 'static,
+// {
+// }
 
 // struct ClosureTask<I, O> {
 //     // core::pin::Pin<Box<dyn core::future::Future<Output = Result<O> > + core::marker::Send+'async_trait>
@@ -60,23 +66,150 @@ where
 //     }
 // }
 
-pub trait BoxedClosure<I, O>: std::ops::FnOnce(I) -> Fut<O> + Unpin
+// pub trait PinnedClosure<I, O>: FnOnce(I) -> Fut<O> + Unpin
 // where
 //     F: Future<Output = Result<O>>,
-{
-    // Running a task consumes it, which does guarantee that tasks
-    // may only run exactly once.
-    // async fn run(self: Box<Self>, input: I) -> Result<O>;
-}
+// {
+// Running a task consumes it, which does guarantee that tasks
+// may only run exactly once.
+// async fn run(self: Box<Self>, input: I) -> Result<O>;
+// }
 
-impl<C, I, O> BoxedClosure<I, O> for C where
-    C: std::ops::FnOnce(I) -> Fut<O> + Unpin // F: Future<Output = Result<O>>,
-{
+// F: Future<Output = Result<O>>,
+
+// impl<C, I, O> PinnedClosure<I, O> for C where C: std::ops::FnOnce(I) -> Fut<O> + Unpin {}
+
+// #[cfg(feature = "off")]
+mod closuretests {
+    #![allow(warnings)]
+    use futures::Future;
+
+    // pub trait Closure<I, O>: FnOnce(I) -> super::Fut<O> {
+    // pub trait Closure<F, I, O>: FnOnce(I) -> F {
+    // pub trait Closure<F, I, O> {
+    pub trait Closure<I, O> {
+        fn run(self, inputs: I) -> super::Fut<O>;
+    }
+
+    // impl<F, C, I, O> Closure<F, I, O> for C
+    // where
+    //     C: FnOnce(I) -> F,
+    //     F: Future<Output = super::Result<O>> + Send + 'static,
+    // {
+    //     fn run(self, inputs: I) -> super::Fut<O> {
+    //         Box::pin(self(inputs))
+    //     }
+    // }
+
+    pub trait Closure2<T1, T2, O> {
+        fn run(self, t1: T1, t2: T2) -> super::Fut<O>;
+    }
+
+    pub trait Closure3<T1, T2, T3, O> {
+        fn run(self, t1: T1, t2: T2, t3: T3) -> super::Fut<O>;
+    }
+
+    impl<F, C, T1, T2, O> Closure2<T1, T2, O> for C
+    where
+        C: FnOnce(T1, T2) -> F,
+        F: Future<Output = super::Result<O>> + Send + 'static,
+    {
+        fn run(self, t1: T1, t2: T2) -> super::Fut<O> {
+            let fut = self(t1, t2);
+            Box::pin(fut)
+        }
+    }
+
+    impl<F, C, T1, T2, T3, O> Closure3<T1, T2, T3, O> for C
+    where
+        C: FnOnce(T1, T2, T3) -> F,
+        F: Future<Output = super::Result<O>> + Send + 'static,
+    {
+        fn run(self, t1: T1, t2: T2, t3: T3) -> super::Fut<O> {
+            Box::pin(self(t1, t2, t3))
+        }
+    }
+
+    // impl<F, C, T1, O> Closure<F, T1, O> for C
+    // where
+    //     // C: Closure2<F, T1, T2, O>,
+    //     C: FnOnce(T1) -> F,
+    //     F: Future<Output = super::Result<O>> + Send + 'static,
+    //     // C: FnOnce(I) -> F,
+    //     // F: Future<Output = super::Result<O>> + Send + 'static,
+    // {
+    //     fn run(self, inputs: T1) -> super::Fut<O> {
+    //         Box::pin(self(inputs))
+    //     }
+    // }
+
+    impl<C, T1, T2, O> Closure<(T1, T2), O> for C
+    where
+        C: Closure2<T1, T2, O>,
+        // C: FnOnce(T1, T2) -> F,
+        // F: Future<Output = super::Result<O>> + Send + 'static,
+    {
+        fn run(self, inputs: (T1, T2)) -> super::Fut<O> {
+            let (t1, t2) = inputs;
+            self.run(t1, t2)
+            // Box::pin(self(t1, t2))
+        }
+    }
+
+    impl<C, T1, T2, T3, O> Closure<(T1, T2, T3), O> for C
+    where
+        C: Closure3<T1, T2, T3, O>,
+        // C: FnOnce(T1, T2) -> F,
+        // F: Future<Output = super::Result<O>> + Send + 'static,
+    {
+        fn run(self, inputs: (T1, T2, T3)) -> super::Fut<O> {
+            let (t1, t2, t3) = inputs;
+            self.run(t1, t2, t3)
+            // Box::pin(self(t1, t2))
+        }
+    }
+
+    async fn test() {
+        // let closure = |args: (i32, i32)| async move { Ok(args.0 + args.1) as super::Result<i32> };
+        // let closure: Box<dyn Closure<_, (i32, i32), i32>> = Box::new(closure);
+
+        let closure2 = move |t1: i32, t2: i32| async move { Ok(t1 + t2) as super::Result<i32> };
+
+        fn assert_unpin<C, T1, T2, F>(c: &C)
+        where
+            C: FnOnce(T1, T2) -> F,
+            F: Unpin,
+        {
+        }
+
+        fn assert_closure<C>(c: &C)
+        where
+            C: Closure<(i32, i32), i32>,
+        {
+        }
+
+        assert_closure(&closure2);
+        // assert_unpin(&closure2);
+
+        let fut = Closure::<(i32, i32), i32>::run(closure2, (0, 0));
+
+        // let closure2box: Box<dyn Closure2<i32, i32, i32>> = Box::new(closure2);
+        let closure2box = Box::new(closure2);
+
+        let fut = Closure::<(i32, i32), i32>::run(closure2box, (0, 0));
+        fut.await;
+        // let fut = closure2box.run(0, 0);
+
+        // assert_closure(closure2);
+    }
+
+    // whereFuture<Output = Result<O>> {}
 }
 
 pub(crate) enum PendingTask<I, O> {
     Task(Box<dyn Task<I, O> + Send + Sync>),
-    Closure(Box<dyn BoxedClosure<I, O> + Unpin + Send + Sync>),
+    Closure(Box<dyn Closure<I, O> + Send + Sync>),
+    // Closure(Box<dyn PinnedClosure<I, O> + Unpin + Send + Sync>),
 }
 
 // #[async_trait::async_trait]
@@ -86,10 +219,18 @@ impl<I, O> PendingTask<I, O> {
         match self {
             Self::Task(task) => task.run(input).await,
             Self::Closure(closure) => {
-                let fut = closure(input); // .boxed();
-                let fut = Box::pin(fut);
+                // let fut = closure(input); // .boxed();
+                // let fut = Box::pin(fut);
                 // let fut = Pin::new(fut);
                 // let fut = Pin::new(Box::new(closure(input)));
+
+                // let fut = Box::pin(closure(input));
+                // fut.await
+                // let fut = Box::pin(closure.run(input));
+                let closure: Box<dyn Closure<I, O>> = closure;
+                // let fut = Closure::<I, O>::run(closure, input);
+                // todo!();
+                let fut = closure.run(input);
                 fut.await
             }
         }
@@ -172,7 +313,6 @@ pub trait Task<I, O> {
 
     fn name(&self) -> String {
         "<unnamed>".to_string()
-        // format!("{self:?}")
     }
 }
 
@@ -255,10 +395,12 @@ impl<I, O> NodeInner<I, O> {
         }
     }
 
-    pub fn closure<C, F>(closure: C) -> Self
+    // pub fn closure<C, F>(closure: C) -> Self
+    pub fn closure<C>(closure: Box<C>) -> Self
     where
-        C: UserClosure<F, I, O> + Send + Sync + 'static,
-        F: Future<Output = Result<O>> + Send + Sync + 'static,
+        C: Closure<I, O> + Send + Sync + 'static,
+        // C: Closure<F, I, O> + Send + Sync + 'static,
+        // F: Future<Output = Result<O>> + Send + Sync + 'static,
         I: Send + 'static,
         // I: Send + Sync + 'static,
     {
@@ -266,19 +408,21 @@ impl<I, O> NodeInner<I, O> {
         // let boxed_closure = |inputs: I| {
         //     closure
         // }
-        // fn boxed_closure(closure: UserClosure<F, I, O>) -> Fut<O> {
+        // fn boxed_closure(closure: Closure<F, I, O>) -> Fut<O> {
         //     closure
         // }
 
         // let closure = boxed_closure(closure);
-        let closure = move |inputs: I| {
-            // box the future
-            // Box::pin(async move { closure(inputs).await }) as Fut<O> // Box<dyn Future<Output>>
-            Box::pin(async move { closure(inputs).await }) as Fut<O> // Box<dyn Future<Output>>
-        };
+        // let closure = move |inputs: I| {
+        //     // box the future
+        //     // Box::pin(async move { closure(inputs).await }) as Fut<O> // Box<dyn Future<Output>>
+        //     Box::pin(async move { closure(inputs).await }) as Fut<O> // Box<dyn Future<Output>>
+        // };
         // let future = Box::new(closure);
         // let future = Box::pin(Box::new(closure));
-        let task = PendingTask::Closure(Box::new(closure));
+        // todo!();
+        // let task = PendingTask::Closure(Box::new(closure));
+        let task = PendingTask::Closure(closure);
         let state = InternalState::Pending(task);
         Self {
             started_at: None,
@@ -316,17 +460,20 @@ impl<I, O, L> Node<I, O, L> {
         }
     }
 
-    pub fn closure<F, C, D>(closure: C, deps: D, label: L, index: dag::Idx) -> Self
+    // pub fn closure<F, C, D>(closure: C, deps: D, label: L, index: dag::Idx) -> Self
+    // pub fn closure<C, D>(closure: Box<C>, deps: D, label: L, index: dag::Idx) -> Self
+    pub fn closure<C, D>(closure: Box<C>, deps: D, label: L, index: dag::Idx) -> Self
     where
-        C: UserClosure<F, I, O> + Send + Sync + 'static,
-        F: Future<Output = Result<O>> + Send + Sync + 'static,
-        I: Send + 'static,
+        C: Closure<I, O> + Send + Sync + 'static,
+        // C: Closure<F, I, O> + Send + Sync + 'static,
+        // F: Future<Output = Result<O>> + Send + Sync + 'static,
         // F: Future<Output = Result<O>>,
         // T: task::BoxedClosure<I, O> + Send + Sync + 'static,
         D: Dependencies<I, L> + Send + Sync + 'static,
+        I: Send + 'static,
     {
         Self {
-            task_name: "<closure>".to_string(),
+            task_name: "<unnamed>".to_string(),
             label,
             created_at: Instant::now(),
             inner: RwLock::new(task::NodeInner::closure(closure)),
@@ -919,3 +1066,60 @@ generics! {
     // T15,
     // T16
 }
+
+// TODO: add documentation
+macro_rules! closure {
+    ($name:ident: $( $type:ident ),*) => {
+        #[allow(non_snake_case)]
+        #[async_trait::async_trait]
+        // pub trait $name<F, $( $type ),*, O> {
+        pub trait $name<$( $type ),*, O> {
+            // fn run(self, $($type: $type),*) -> F;
+            // fn run(self, $($type: $type),*) -> Fut<O>;
+            fn run(self: Box<Self>, $($type: $type),*) -> Fut<O>;
+        }
+
+        #[allow(non_snake_case)]
+        #[async_trait::async_trait]
+        // impl<F, C, $( $type ),*, O> $name<F, $( $type ),*, O> for C
+        // impl<F, C, $( $type ),*, O> $name<F, $( $type ),*, O> for C
+        impl<F, C, $( $type ),*, O> $name<$( $type ),*, O> for C
+        where
+            C: FnOnce($( $type ),*) -> F,
+            // F: Future<Output = Result<O>> + Send + 'static,
+            F: Future<Output = Result<O>> + Send + 'static,
+        {
+            fn run(self: Box<Self>, $($type: $type),*) -> Fut<O> {
+            // fn run(self, $($type: $type),*) -> Fut<O> {
+            // fn run(self, $($type: $type),*) -> F {
+                Box::pin(self($( $type ),*))
+                // self($( $type ),*)
+            }
+        }
+
+        #[allow(non_snake_case)]
+        #[async_trait::async_trait]
+        // impl<F, C, $( $type ),*, O> Closure<($( $type ),*,), O> for C
+        impl<C, $( $type ),*, O> Closure<($( $type ),*,), O> for C
+        where
+            C: $name<$( $type ),*, O>,
+            // C: $name<F, $( $type ),*, O>,
+            // F: Future<Output = Result<O>> + Unpin + Send + 'static,
+        {
+            //
+            fn run(self: Box<Self>, input: ($( $type ),*,)) -> Fut<O> {
+            // fn run(self, input: ($( $type ),*,)) -> Fut<O> {
+                // destructure to tuple and call
+                let ($( $type ),*,) = input;
+                let fut = C::run(self, $( $type ),*);
+                // let fut = $name::run(self, $( $type ),*);
+                // Box::pin(fut)
+                fut
+            }
+        }
+    }
+}
+
+closure!(Closure1: T1);
+closure!(Closure2: T1, T2);
+closure!(Closure3: T1, T2, T3);

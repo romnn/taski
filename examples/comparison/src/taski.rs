@@ -22,9 +22,9 @@ async fn render<P, L>(executor: &PolicyExecutor<P, L>) {
         .unwrap();
 }
 
-// async fn sum_two_numbers(lhs: i32, rhs: i32) -> TaskResult<i32> {
-async fn sum_two_numbers(input: (i32, i32)) -> TaskResult<i32> {
-    let (lhs, rhs) = input;
+async fn sum_two_numbers(lhs: i32, rhs: i32) -> TaskResult<i32> {
+    // async fn sum_two_numbers(input: (i32, i32)) -> TaskResult<i32> {
+    // let (lhs, rhs) = input;
     Ok(lhs + rhs)
 }
 
@@ -53,7 +53,8 @@ pub async fn run() -> Option<i32> {
     // let _3 = graph.add_node(SumTwoNumbers {}, (_1, _2), ());
     // let _3 = graph.add_closure(|(a, b)| Ok(a + b), (_1, _2), ());
     let c = 0;
-    let closure = move |(a, b)| async move { Ok(a + b + c) };
+    // let closure = move |(a, b)| async move { Ok(a + b + c) };
+    let closure = move |a, b| async move { Ok(a + b + c) };
     let closure2 = async { 0 };
 
     fn assert_unpin<C, A, F>(c: C)
@@ -62,6 +63,14 @@ pub async fn run() -> Option<i32> {
         F: Unpin,
     {
     }
+
+    fn assert_closure<C>(c: C)
+    where
+        C: taski::task::Closure<(i32, i32), i32>,
+    {
+    }
+
+    assert_closure(closure);
     // assert_unpin(closure);
 
     let _3 = graph.add_closure(closure, (_1, _2), ());

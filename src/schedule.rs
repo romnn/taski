@@ -283,7 +283,9 @@ impl<L> Schedule<L> {
         node
     }
 
-    pub fn add_closure<C, F, I, O, D>(
+    // pub fn add_closure<C, F, I, O, D>(
+    // pub fn add_closure<C, F, I, O, D>(
+    pub fn add_closure<C, I, O, D>(
         &mut self,
         closure: C,
         deps: D,
@@ -291,10 +293,14 @@ impl<L> Schedule<L> {
     ) -> Arc<task::Node<I, O, L>>
     where
         // T: task::BoxedClosure<I, O> + Send + Sync + 'static,
-        // C: task::UserClosure<F, I, O> + Send + Sync + 'static,
-        C: task::UserClosure<F, I, O> + Send + Sync + 'static,
+        // C: task::Closure<F, I, O> + Send + Sync + 'static,
+        // C: task::Closure<F, I, O> + Send + Sync + 'static,
+
+        // valid:
+        C: task::Closure<I, O> + Send + Sync + 'static,
+        // C: std::ops::FnOnce(I) -> F + Send + Sync,
         // F: futures::Future<Output = task::Result<O>>,
-        F: futures::Future<Output = task::Result<O>> + Send + Sync + 'static,
+        // F: futures::Future<Output = task::Result<O>> + Send + Sync + 'static,
 
         // T: task::Task<I, O> + std::fmt::Debug + Send + Sync + 'static,
         D: Dependencies<I, L> + Send + Sync + 'static,
@@ -303,6 +309,7 @@ impl<L> Schedule<L> {
         L: std::fmt::Debug + Sync + 'static,
     {
         let index = dag::Idx::new(self.dag.node_count());
+        let closure = Box::new(closure);
         let node = Arc::new(task::Node::closure(closure, deps, label, index));
         let node_index = self.dag.add_node(node.clone());
         assert_eq!(node_index, index);
