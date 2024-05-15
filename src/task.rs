@@ -440,6 +440,7 @@ where
         }
 
         let idx = self.index();
+        #[cfg(feature = "render")]
         let color = *self.color();
         let label = self.to_string();
         let inner = Arc::clone(&self.inner);

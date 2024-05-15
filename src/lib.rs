@@ -212,6 +212,7 @@ mod tests {
             fn name(&self) -> String {
                 "Download".to_string()
             }
+            #[cfg(feature = "render")]
             fn color(&self) -> Option<crate::render::Rgba> {
                 Some(crate::render::Rgba::from_hue(0.0.into()))
             }
@@ -229,6 +230,7 @@ mod tests {
             fn name(&self) -> String {
                 "Process".to_string()
             }
+            #[cfg(feature = "render")]
             fn color(&self) -> Option<crate::render::Rgba> {
                 Some(crate::render::Rgba::from_hue(180.0.into()))
             }
