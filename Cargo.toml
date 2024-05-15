@@ -4,7 +4,7 @@ members = ["examples/*"]
 
 [package]
 name = "taski"
-version = "0.0.3"
+version = "version = "0.0.3""
 edition = "2021"
 authors = ["romnn <contact@romnn.com>"]
 description = "async task DAG execution"
