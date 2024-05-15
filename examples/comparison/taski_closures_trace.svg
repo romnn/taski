@@ -15,7 +15,7 @@ Input(2)()
 <text x="1" y="125" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
 &lt;unnamed&gt;()
 </text>
-<rect x="0" y="160" width="902" height="40" opacity="1" fill="#00F8FF" stroke="none"/>
+<rect x="0" y="160" width="901" height="40" opacity="1" fill="#00F8FF" stroke="none"/>
 <text x="1" y="165" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
 &lt;unnamed&gt;(1, 2)
 </text>

@@ -26,8 +26,6 @@ fn summarize(s: &dyn std::fmt::Debug, max_length: usize) -> String {
 
 pub type Ref<L> = Arc<dyn Schedulable<L>>;
 
-// pub trait ResultTrait: std::error::Error + Send + Sync + 'static {}
-
 pub struct Error(pub Box<dyn std::error::Error + Send + Sync + 'static>);
 
 impl Error {
@@ -65,10 +63,6 @@ impl std::error::Error for Error {
     fn cause(&self) -> Option<&dyn std::error::Error> {
         self.0.cause()
     }
-
-    // fn provide<'a>(&'a self, request: &mut Request<'a>) {
-    //     self.0.provide(request)
-    // }
 }
 
 impl From<Box<dyn std::error::Error + Send + Sync + 'static>> for Error {
@@ -77,14 +71,6 @@ impl From<Box<dyn std::error::Error + Send + Sync + 'static>> for Error {
     }
 }
 
-// impl<E> From<E> for Error
-// where
-//     E: std::error::Error + Send + Sync + 'static,
-// {
-//     fn from(value: E) -> Self {}
-// }
-
-// pub type Result<O> = std::result::Result<O, Error>;
 pub type Result<O> = std::result::Result<O, Box<dyn std::error::Error + Send + Sync + 'static>>;
 
 pub type Fut<O> = Pin<Box<dyn Future<Output = Result<O>> + Send>>;
@@ -93,12 +79,17 @@ pub trait Closure<I, O> {
     fn run(self: Box<Self>, inputs: I) -> Fut<O>;
 }
 
+/// Pending task.
+///
+/// Due to lack of trait specialization, `Task` and `Closure` may overlap.
+/// Hence, we resort to explicit static dispatch here.
 pub(crate) enum PendingTask<I, O> {
     Task(Box<dyn Task<I, O> + Send + Sync>),
     Closure(Box<dyn Closure<I, O> + Send + Sync>),
 }
 
 impl<I, O> PendingTask<I, O> {
+    /// Runs the pending task, consuming it.
     async fn run(self, input: I) -> Result<O> {
         match self {
             Self::Task(task) => task.run(input).await,
@@ -110,7 +101,7 @@ impl<I, O> PendingTask<I, O> {
     }
 }
 
-// could change this to either closure or type here?
+/// Internal state of a task
 pub(crate) enum InternalState<I, O> {
     /// Task is pending and waiting to be run
     Pending(PendingTask<I, O>),
@@ -124,25 +115,30 @@ pub(crate) enum InternalState<I, O> {
 }
 
 impl<I, O> InternalState<I, O> {
+    /// Whether the task is in `Pending` state.
     #[allow(unused)]
     pub fn is_pending(&self) -> bool {
         matches!(self, Self::Pending(_))
     }
 
+    /// Whether the task is in `Running` state.
     pub fn is_running(&self) -> bool {
         matches!(self, Self::Running)
     }
 
+    /// Whether the task is in `Succeeded` state.
     pub fn did_succeed(&self) -> bool {
         matches!(self, Self::Succeeded(_))
     }
 
+    /// Whether the task is in `Failed` state.
     #[allow(unused)]
     pub fn did_fail(&self) -> bool {
         matches!(self, Self::Failed(_))
     }
 }
 
+/// The state of a task.
 #[derive(Debug, Clone)]
 pub enum State {
     /// Task is pending
@@ -157,20 +153,24 @@ pub enum State {
 
 impl State {
     #[must_use]
+    /// Whether the task is in `Pending` state.
     pub fn is_pending(&self) -> bool {
         matches!(self, Self::Pending)
     }
 
+    /// Whether the task is in `Running` state.
     #[must_use]
     pub fn is_running(&self) -> bool {
         matches!(self, Self::Running)
     }
 
     #[must_use]
+    /// Whether the task is in `Succeeded` state.
     pub fn did_succeed(&self) -> bool {
         matches!(self, Self::Succeeded)
     }
 
+    /// Whether the task is in `Failed` state.
     #[must_use]
     pub fn did_fail(&self) -> bool {
         matches!(self, Self::Failed)
@@ -185,8 +185,16 @@ pub trait Task<I, O> {
     /// tasks may only run exactly once.
     async fn run(self: Box<Self>, input: I) -> Result<O>;
 
+    /// The name of the task.
+    ///
+    /// This name is used for rendering.
     fn name(&self) -> String {
         "<unnamed>".to_string()
+    }
+
+    /// The color of the task when rendered.
+    fn color(&self) -> Option<crate::render::Rgba> {
+        None
     }
 }
 
@@ -279,12 +287,13 @@ impl<I, O> NodeInner<I, O> {
 #[derive()]
 pub struct Node<I, O, L> {
     pub task_name: String,
+    pub color: Option<crate::render::Rgba>,
     pub label: L,
     pub created_at: Instant,
     pub dependencies: Box<dyn Dependencies<I, L> + Send + Sync>,
     pub index: dag::Idx,
 
-    pub(crate) inner: RwLock<NodeInner<I, O>>,
+    pub(crate) inner: Arc<RwLock<NodeInner<I, O>>>,
 }
 
 impl<I, O, L> Node<I, O, L> {
@@ -293,11 +302,15 @@ impl<I, O, L> Node<I, O, L> {
         T: task::Task<I, O> + Send + Sync + 'static,
         D: Dependencies<I, L> + Send + Sync + 'static,
     {
+        let color = task.color();
+        #[cfg(feature = "render")]
+        let color = Some(color.unwrap_or_else(|| crate::render::color_from_id(index)));
         Self {
             task_name: task.name(),
+            color,
             label,
             created_at: Instant::now(),
-            inner: RwLock::new(task::NodeInner::new(task)),
+            inner: Arc::new(RwLock::new(task::NodeInner::new(task))),
             dependencies: Box::new(deps),
             index,
         }
@@ -309,11 +322,16 @@ impl<I, O, L> Node<I, O, L> {
         D: Dependencies<I, L> + Send + Sync + 'static,
         I: Send + 'static,
     {
+        #[cfg(not(feature = "render"))]
+        let color = None;
+        #[cfg(feature = "render")]
+        let color = Some(crate::render::color_from_id(index));
         Self {
             task_name: "<unnamed>".to_string(),
+            color,
             label,
             created_at: Instant::now(),
-            inner: RwLock::new(task::NodeInner::closure(closure)),
+            inner: Arc::new(RwLock::new(task::NodeInner::closure(closure))),
             dependencies: Box::new(deps),
             index,
         }
@@ -370,7 +388,9 @@ where
         match inner.state {
             InternalState::Pending(_) => "<pending>".to_string(),
             InternalState::Running => "<running>".to_string(),
-            InternalState::Succeeded(ref value) => format!("{value:?}"),
+            InternalState::Succeeded(ref value) => {
+                format!("{value:?}")
+            }
             InternalState::Failed(_) => "<failed>".to_string(),
         }
     }
@@ -393,7 +413,7 @@ where
         self.index
     }
 
-    async fn run(&self) {
+    fn run(&self) -> Option<crate::schedule::Fut> {
         let task = {
             let mut inner = self.inner.write().unwrap();
 
@@ -402,12 +422,12 @@ where
                 // this takes ownership of the task
                 let task = std::mem::replace(&mut inner.state, InternalState::Running);
                 let InternalState::Pending(task) = task else {
-                    return;
+                    return None;
                 };
                 task
             } else {
                 // already ran
-                return;
+                return None;
             }
         };
 
@@ -419,19 +439,39 @@ where
             inner.started_at.get_or_insert(Instant::now());
         }
 
-        // println!("running task {self}");
+        let idx = self.index();
+        let color = *self.color();
+        let label = self.to_string();
+        let inner = Arc::clone(&self.inner);
 
-        // this will consume the task
-        let result = task.run(inputs).await;
+        Some(Box::pin(async move {
+            log::debug!("running {label}");
 
-        let mut inner = self.inner.write().unwrap();
-        inner.completed_at.get_or_insert(Instant::now());
+            let start = Instant::now();
 
-        assert!(inner.state.is_running());
-        inner.state = match result {
-            Ok(output) => InternalState::Succeeded(output),
-            Err(err) => InternalState::Failed(err.into()),
-        };
+            // this will consume the task
+            let result = task.run(inputs).await;
+
+            let end = Instant::now();
+
+            let mut inner = inner.write().unwrap();
+            inner.completed_at.get_or_insert(end);
+
+            assert!(inner.state.is_running());
+            inner.state = match result {
+                Ok(output) => InternalState::Succeeded(output),
+                Err(err) => InternalState::Failed(err.into()),
+            };
+
+            let traced = crate::trace::Task {
+                label,
+                #[cfg(feature = "render")]
+                color,
+                start,
+                end,
+            };
+            (idx, traced)
+        }))
     }
 
     fn label(&self) -> &L {
@@ -440,6 +480,10 @@ where
 
     fn name(&self) -> &str {
         &self.task_name
+    }
+
+    fn color(&self) -> &Option<crate::render::Rgba> {
+        &self.color
     }
 
     fn dependencies(&self) -> Vec<Arc<dyn Schedulable<L>>> {
@@ -477,6 +521,11 @@ macro_rules! task {
             fn name(&self) -> String {
                 format!("{self:?}")
             }
+
+            fn color(&self) -> Option<crate::render::Rgba> {
+                None
+            }
+
         }
 
         #[allow(non_snake_case, clippy::too_many_arguments)]
@@ -493,7 +542,11 @@ macro_rules! task {
             }
 
             fn name(&self) -> String {
-                format!("{self:?}")
+                $name::name(self)
+            }
+
+            fn color(&self) -> Option<crate::render::Rgba> {
+                $name::color(self)
             }
         }
     }
@@ -516,6 +569,10 @@ pub trait Task0<O>: std::fmt::Debug {
     fn name(&self) -> String {
         format!("{self:?}")
     }
+
+    fn color(&self) -> Option<crate::render::Rgba> {
+        None
+    }
 }
 
 #[async_trait::async_trait]
@@ -528,7 +585,11 @@ where
     }
 
     fn name(&self) -> String {
-        format!("{self:?}")
+        Task0::name(self)
+    }
+
+    fn color(&self) -> Option<crate::render::Rgba> {
+        Task0::color(self)
     }
 }
 

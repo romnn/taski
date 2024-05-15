@@ -1,8 +1,6 @@
 use crate::{dag, policy, schedule::Schedule, task, trace};
 
 use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Instant;
 
 /// An executor for a task schedule
 #[derive(Debug)]
@@ -10,7 +8,7 @@ use std::time::Instant;
 pub struct PolicyExecutor<P, L> {
     pub schedule: Schedule<L>,
     pub policy: P,
-    pub trace: trace::Trace<usize>,
+    pub trace: trace::Trace<dag::Idx>,
 }
 
 impl<P, L> PolicyExecutor<P, L>
@@ -41,9 +39,36 @@ where
             policy: policy::Fifo::default(),
         }
     }
+
+    #[must_use]
+    pub fn max_concurrent(mut self, limit: Option<usize>) -> Self {
+        self.policy.max_concurrent = limit;
+        self
+    }
 }
 
-// TODO: bounded executor
+impl<L> PolicyExecutor<policy::Priority, L>
+where
+    L: std::cmp::Ord + 'static,
+{
+    /// Creates a new executor with a priority policy.
+    ///
+    /// The priority is given by the task label.
+    #[must_use]
+    pub fn priority(schedule: Schedule<L>) -> Self {
+        Self {
+            schedule,
+            trace: trace::Trace::new(),
+            policy: policy::Priority::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn max_concurrent(mut self, limit: Option<usize>) -> Self {
+        self.policy.max_concurrent = limit;
+        self
+    }
+}
 
 impl<P, L> PolicyExecutor<P, L>
 where
@@ -74,28 +99,17 @@ where
                 assert!(ready.contains(&idx));
                 ready.retain(|r| r != &idx);
 
-                let task = Arc::clone(&self.schedule.dag[idx]);
+                let task = &self.schedule.dag[idx];
                 log::debug!("adding {:?}", &task);
 
-                running_tasks.push(Box::pin(async move {
-                    log::debug!("running {:?}", &task);
-
-                    let start_time = Instant::now();
-                    task.run().await;
-                    let end_time = Instant::now();
-
-                    let traced = trace::Task {
-                        label: task.name().to_string(),
-                        start: Some(start_time),
-                        end: Some(end_time),
-                    };
-                    (idx, traced)
-                }));
+                if let Some(task_fut) = task.run() {
+                    running_tasks.push(task_fut);
+                }
             }
 
             // wait for a task to complete
             if let Some((idx, traced)) = running_tasks.next().await {
-                self.trace.tasks.insert(idx.index(), traced);
+                self.trace.tasks.push((idx, traced));
 
                 let completed = &self.schedule.dag[idx];
                 log::debug!(
@@ -103,17 +117,6 @@ where
                     &completed,
                     completed.state()
                 );
-
-                // let _states = self
-                //     .schedule
-                //     .dag
-                //     .node_indices()
-                //     .map(|idx| {
-                //         let task = &self.schedule.dag[idx];
-                //         (task.to_string(), task.state())
-                //     })
-                //     .collect::<Vec<_>>();
-                // dbg!(_states);
 
                 match completed.state() {
                     task::State::Pending | task::State::Running { .. } => {
@@ -157,7 +160,7 @@ where
                     //         .map(|d| d.state())
                     //         .collect::<Vec<_>>()
                     // );
-                    dep.ready()
+                    dep.is_ready()
                 });
 
                 // extend the ready queue

@@ -6,7 +6,7 @@ pub trait Policy<L> {
 
 #[derive(Debug, Default, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Fifo {
-    max_tasks: Option<usize>,
+    pub max_concurrent: Option<usize>,
 }
 
 impl Fifo {
@@ -16,14 +16,16 @@ impl Fifo {
     }
 
     #[must_use]
-    pub fn max_tasks(max_tasks: Option<usize>) -> Self {
-        Self { max_tasks }
+    pub fn max_concurrent(limit: Option<usize>) -> Self {
+        Self {
+            max_concurrent: limit,
+        }
     }
 }
 
 impl<L> Policy<L> for Fifo {
     fn arbitrate(&self, ready: &[dag::Idx], schedule: &Schedule<L>) -> Option<dag::Idx> {
-        if let Some(limit) = self.max_tasks {
+        if let Some(limit) = self.max_concurrent {
             if schedule.running().count() >= limit {
                 // do not schedule new task
                 return None;
@@ -36,7 +38,7 @@ impl<L> Policy<L> for Fifo {
 
 #[derive(Debug, Default, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Priority {
-    max_tasks: Option<usize>,
+    pub max_concurrent: Option<usize>,
 }
 
 impl Priority {
@@ -46,8 +48,10 @@ impl Priority {
     }
 
     #[must_use]
-    pub fn max_tasks(max_tasks: Option<usize>) -> Self {
-        Self { max_tasks }
+    pub fn max_concurrent(limit: Option<usize>) -> Self {
+        Self {
+            max_concurrent: limit,
+        }
     }
 }
 
@@ -56,7 +60,7 @@ where
     L: std::cmp::Ord,
 {
     fn arbitrate(&self, ready: &[dag::Idx], schedule: &Schedule<L>) -> Option<dag::Idx> {
-        if let Some(limit) = self.max_tasks {
+        if let Some(limit) = self.max_concurrent {
             if schedule.running().count() >= limit {
                 // do not schedule new task
                 return None;

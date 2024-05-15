@@ -16,17 +16,19 @@ where
     T: taski::task::Task<I, O>,
 {
     let label = task.name().to_string();
-    let start_time = Instant::now();
+    let color = task.color();
+    let start = Instant::now();
     let result = taski::task::Task::run(task, args)
         .await
         .map_err(taski::Error)?;
-    let end_time = Instant::now();
+    let end = Instant::now();
     let traced = taski::trace::Task {
         label,
-        start: Some(start_time),
-        end: Some(end_time),
+        color,
+        start,
+        end,
     };
-    trace.tasks.insert(trace.tasks.len(), traced);
+    trace.tasks.push((trace.tasks.len(), traced));
     Ok(result)
 }
 

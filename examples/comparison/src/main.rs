@@ -25,17 +25,17 @@ pub fn should_render() -> bool {
 // Render the DAG graph and an execution trace.
 //
 // NOTE: this requires the "render" feature of taski.
-pub fn render<P, L>(executor: &taski::PolicyExecutor<P, L>) {
+pub fn render<P, L>(executor: &taski::PolicyExecutor<P, L>, suffix: &str) {
     if !should_render() {
         return;
     }
     executor
         .schedule
-        .render_to(manifest_dir().join("taski_graph.svg"))
+        .render_to(manifest_dir().join(format!("taski_{suffix}_graph.svg")))
         .unwrap();
     executor
         .trace
-        .render_to(manifest_dir().join("taski_trace.svg"))
+        .render_to(manifest_dir().join(format!("taski_{suffix}_trace.svg")))
         .unwrap();
 }
 

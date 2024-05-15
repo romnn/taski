@@ -31,7 +31,7 @@ pub async fn run() -> Option<i32> {
     executor.run().await;
 
     // optional: render the DAG graph and an execution trace.
-    super::render(&executor);
+    super::render(&executor, "closures");
 
     _7.output()
 }

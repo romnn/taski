@@ -3,12 +3,14 @@ use petgraph as pg;
 use crate::{
     dag::{self, Dfs, DAG},
     dependency::Dependencies,
-    task,
+    task, trace,
 };
 
+use futures::Future;
 use pg::graph::NodeIndex;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -20,6 +22,8 @@ pub enum Error {
     #[error("task dependency failed")]
     FailedDependency,
 }
+
+pub(crate) type Fut = Pin<Box<dyn Future<Output = (dag::Idx, trace::Task)>>>;
 
 /// Trait representing a schedulable task node.
 ///
@@ -86,7 +90,7 @@ pub trait Schedulable<L> {
     ///
     /// Users must not manually run the task before all
     /// dependencies have completed.
-    async fn run(&self);
+    fn run(&self) -> Option<Fut>;
 
     /// Returns the name of the schedulable task
     fn name(&self) -> &str;
@@ -94,13 +98,16 @@ pub trait Schedulable<L> {
     /// Returns the label of this task.
     fn label(&self) -> &L;
 
+    /// Returns the color of this task for rendering.
+    fn color(&self) -> &Option<crate::render::Rgba>;
+
     /// Returns the dependencies of the schedulable task
     fn dependencies(&self) -> Vec<Arc<dyn Schedulable<L>>>;
 
     /// Indicates if the schedulable task is ready for execution.
     ///
     /// A task is ready if all its dependencies succeeded.
-    fn ready(&self) -> bool {
+    fn is_ready(&self) -> bool {
         self.dependencies().iter().all(|d| d.succeeded())
     }
 
@@ -345,121 +352,14 @@ impl<L> Schedule<L> {
     }
 
     pub fn ready(&self) -> impl Iterator<Item = dag::Idx> + '_ {
-        self.dag.node_indices().filter(|idx| self.dag[*idx].ready())
+        self.dag
+            .node_indices()
+            .filter(|idx| self.dag[*idx].is_ready())
     }
 
     pub fn running(&self) -> impl Iterator<Item = dag::Idx> + '_ {
-        self.dag.node_indices().filter(|idx| self.dag[*idx].ready())
-    }
-}
-
-#[cfg(feature = "render")]
-pub mod render {
-    use crate::{schedule::Schedulable, task};
-
-    use layout::{
-        backends::svg::SVGWriter,
-        core::{self, base::Orientation, color::Color, style},
-        std_shapes::shapes,
-        topo::layout::VisualGraph,
-    };
-    use petgraph as pg;
-    use std::collections::HashMap;
-    use std::sync::Arc;
-
-    impl<L> super::Schedule<L> {
-        /// Render the task graph as an svg image.
-        ///
-        /// # Errors
-        /// - If writing to the specified output path fails.
-        pub fn render_to(&self, path: impl AsRef<std::path::Path>) -> Result<(), std::io::Error> {
-            let file = std::fs::OpenOptions::new()
-                .write(true)
-                .truncate(true)
-                .create(true)
-                .open(path.as_ref())?;
-            let mut writer = std::io::BufWriter::new(file);
-            self.render_to_writer(&mut writer)
-        }
-
-        /// Render the task graph as an svg image.
-        ///
-        /// # Errors
-        /// - If writing to the specified output path fails.
-        pub fn render_to_writer(
-            &self,
-            mut writer: impl std::io::Write,
-        ) -> Result<(), std::io::Error> {
-            let content = self.render();
-            writer.write_all(content.as_bytes())?;
-            Ok(())
-        }
-
-        /// Render the task graph as an svg image.
-        #[must_use]
-        pub fn render(&self) -> String {
-            fn node<LL>(node: &task::Ref<LL>) -> shapes::Element {
-                let node_style = style::StyleAttr {
-                    line_color: Color::new(0x0000_00FF),
-                    line_width: 2,
-                    fill_color: Some(Color::new(0xB4B3_B2FF)),
-                    rounded: 0,
-                    font_size: 15,
-                };
-                let size = core::geometry::Point { x: 100.0, y: 100.0 };
-                shapes::Element::create(
-                    shapes::ShapeKind::Circle(format!("{node}")),
-                    node_style,
-                    Orientation::TopToBottom,
-                    size,
-                )
-            }
-
-            let mut graph = VisualGraph::new(Orientation::TopToBottom);
-
-            let mut handles: HashMap<Arc<dyn Schedulable<L>>, layout::adt::dag::NodeHandle> =
-                HashMap::new();
-
-            for idx in self.dag.node_indices() {
-                let task = &self.dag[idx];
-                let deps = self
-                    .dag
-                    .neighbors_directed(idx, pg::Direction::Incoming)
-                    .map(|idx| &self.dag[idx]);
-
-                let dest_handle = *handles
-                    .entry(task.clone())
-                    .or_insert_with(|| graph.add_node(node(task)));
-                for dep in deps {
-                    let src_handle = *handles
-                        .entry(dep.clone())
-                        .or_insert_with(|| graph.add_node(node(dep)));
-                    let arrow = shapes::Arrow {
-                        start: shapes::LineEndKind::None,
-                        end: shapes::LineEndKind::Arrow,
-                        line_style: style::LineStyleKind::Normal,
-                        text: String::new(),
-                        look: style::StyleAttr {
-                            line_color: Color::new(0x0000_00FF),
-                            line_width: 2,
-                            fill_color: Some(Color::new(0xB4B3_B2FF)),
-                            rounded: 0,
-                            font_size: 15,
-                        },
-                        src_port: None,
-                        dst_port: None,
-                    };
-                    graph.add_edge(arrow, src_handle, dest_handle);
-                }
-            }
-
-            // https://docs.rs/layout-rs/latest/src/layout/backends/svg.rs.html#200
-            let mut backend = SVGWriter::new();
-            let debug_mode = false;
-            let disable_opt = false;
-            let disable_layout = false;
-            graph.do_it(debug_mode, disable_opt, disable_layout, &mut backend);
-            backend.finalize()
-        }
+        self.dag
+            .node_indices()
+            .filter(|idx| self.dag[*idx].state().is_running())
     }
 }

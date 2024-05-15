@@ -1,18 +1,28 @@
-use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
-use std::time::Instant;
-
-#[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
+/// A traced task.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Task {
     pub label: String,
-    pub start: Option<Instant>,
-    pub end: Option<Instant>,
+    #[cfg(feature = "render")]
+    pub color: Option<crate::render::Rgba>,
+    pub start: Instant,
+    pub end: Instant,
 }
 
+impl Task {
+    /// Duration of the traced task.
+    #[must_use]
+    pub fn duraton(&self) -> Duration {
+        self.end.saturating_duration_since(self.start)
+    }
+}
+
+/// An execution trace of tasks.
 #[derive(Debug)]
 pub struct Trace<T> {
     pub start_time: Instant,
-    pub tasks: HashMap<T, Task>,
+    pub tasks: Vec<(T, Task)>,
 }
 
 impl<T> Default for Trace<T>
@@ -25,202 +35,103 @@ where
     }
 }
 
+pub mod iter {
+    use std::collections::HashSet;
+    use std::time::Instant;
+
+    enum Event {
+        Start(Instant),
+        End(Instant),
+    }
+
+    impl Event {
+        pub fn time(&self) -> &Instant {
+            match self {
+                Self::Start(t) | Self::End(t) => t,
+            }
+        }
+    }
+
+    /// An iterator over all combinations of concurrent tasks of a trace.
+    #[allow(clippy::module_name_repetitions)]
+    pub struct ConcurrentIter<'a, T> {
+        events: std::vec::IntoIter<(&'a T, Event)>,
+        running: HashSet<T>,
+    }
+
+    impl<'a, T> ConcurrentIter<'a, T> {
+        pub fn new(tasks: &'a [(T, super::Task)]) -> Self {
+            let mut events: Vec<_> = tasks
+                .iter()
+                .flat_map(|(k, t)| [(k, Event::Start(t.start)), (k, Event::End(t.end))])
+                .collect();
+
+            events.sort_by_key(|(_, event)| *event.time());
+            Self {
+                events: events.into_iter(),
+                running: HashSet::new(),
+            }
+        }
+    }
+
+    impl<'a, T> Iterator for ConcurrentIter<'a, T>
+    where
+        T: std::hash::Hash + Eq + Clone,
+    {
+        type Item = HashSet<T>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            let (k, event) = self.events.next()?;
+            match event {
+                Event::Start(_) => {
+                    self.running.insert(k.clone());
+                }
+                Event::End(_) => {
+                    self.running.remove(k);
+                }
+            }
+            // TODO: use streaming iterators? but then move this into testing only to not add a
+            // large dependency
+            Some(self.running.clone())
+        }
+    }
+}
+
 impl<T> Trace<T> {
     #[must_use]
     #[inline]
     pub fn new() -> Self {
         Self {
             start_time: Instant::now(),
-            tasks: HashMap::new(),
+            tasks: Vec::new(),
         }
     }
-}
 
-#[cfg(feature = "render")]
-pub mod render {
-    use plotters::prelude::*;
-    use rand::{Rng, SeedableRng};
-    use rand_chacha::ChaCha8Rng;
-    use std::time::Duration;
-
-    #[allow(clippy::cast_sign_loss)]
-    #[allow(clippy::cast_possible_truncation)]
-    #[inline]
-    fn hue_to_rgb(hue: palette::RgbHue) -> RGBColor {
-        use palette::IntoColor;
-        let hsv = palette::Hsv::new(hue, 1.0, 1.0);
-        let rgb: palette::rgb::Rgb = hsv.into_color();
-        RGBColor(
-            (rgb.red * 255.0) as u8,
-            (rgb.green * 255.0) as u8,
-            (rgb.blue * 255.0) as u8,
-        )
+    /// Sort tasks in this trace based on their starting time
+    pub fn sort_chronologically(&mut self) {
+        // NOTE: this uses a stable sorting algorithm, i.e., it does not alter the order of
+        // tasks that started at the same time.
+        self.tasks.sort_by_key(|(_, Task { start, .. })| *start);
     }
 
-    #[derive(thiserror::Error, Debug)]
-    pub enum Error {
-        #[error("the trace is too large to be rendered")]
-        TooLarge,
-        #[error(transparent)]
-        Io(#[from] std::io::Error),
-    }
-
-    impl<T> super::Trace<T>
+    /// Iterator over all concurrent tasks
+    #[must_use]
+    pub fn iter_concurrent(&self) -> iter::ConcurrentIter<T>
     where
-        T: std::hash::Hash + std::cmp::Ord + Eq,
+        T: std::hash::Hash + Eq + Clone,
     {
-        /// Render the execution trace as an SVG image.
-        ///
-        /// # Errors
-        /// - If the trace is too large to be rendered.
-        /// - If writing to the specified output path fails.
-        pub fn render_to(&self, path: impl AsRef<std::path::Path>) -> Result<(), Error> {
-            let file = std::fs::OpenOptions::new()
-                .write(true)
-                .truncate(true)
-                .create(true)
-                .open(path.as_ref())?;
-            let mut writer = std::io::BufWriter::new(file);
-            self.render_to_writer(&mut writer)
-        }
+        iter::ConcurrentIter::new(&self.tasks)
+    }
 
-        /// Render the execution trace as an SVG image.
-        ///
-        /// # Errors
-        /// - If the trace is too large to be rendered.
-        /// - If writing to the specified output path fails.
-        pub fn render_to_writer(&self, mut writer: impl std::io::Write) -> Result<(), Error> {
-            let content = self.render()?;
-            writer.write_all(content.as_bytes())?;
-            Ok(())
-        }
-
-        /// Render the execution trace as an SVG image.
-        ///
-        /// # Errors
-        /// - If the trace is too large to be rendered.
-        #[allow(clippy::cast_possible_truncation)]
-        #[allow(clippy::cast_precision_loss)]
-        pub fn render(&self) -> Result<String, Error> {
-            #[derive(Default, Debug, Clone)]
-            struct Bar<T> {
-                begin: u128,
-                length: u128,
-                label: String,
-                id: Option<T>,
-                color: RGBColor,
-            }
-
-            const BAR_HEIGHT: i32 = 40;
-            const TARGET_WIDTH: u32 = 2000;
-
-            fn calculate_hash<T: std::hash::Hash>(t: &T) -> u64 {
-                use std::hash::Hasher;
-                let mut s = std::hash::DefaultHasher::new();
-                t.hash(&mut s);
-                s.finish()
-            }
-
-            // let tasks = self.tasks.lock().await;
-
-            let mut bars: Vec<_> = self
-                .tasks
-                .iter()
-                .filter_map(|(k, t)| match (t.start, t.end) {
-                    (Some(s), Some(e)) => {
-                        let begin: u128 = s.duration_since(self.start_time).as_nanos();
-                        let end: u128 = e.duration_since(self.start_time).as_nanos();
-                        let mut rng = ChaCha8Rng::seed_from_u64(calculate_hash(k));
-                        let hue = palette::RgbHue::from_degrees(rng.gen_range(0.0..360.0));
-                        let color = hue_to_rgb(hue);
-                        Some(Bar {
-                            begin,
-                            length: end.saturating_sub(begin),
-                            label: t.label.clone(),
-                            color,
-                            id: Some(k),
-                        })
-                    }
-                    _ => None,
-                })
-                .collect();
-
-            // compute the latest end time for normalization
-            let latest = bars
-                .iter()
-                .map(|b| b.begin + b.length)
-                .max()
-                .unwrap_or_default();
-
-            // compute the total duration of the trace.
-            let total_duration = Duration::from_nanos(latest.try_into().unwrap());
-
-            bars.push(Bar {
-                begin: 0,
-                length: latest,
-                label: format!("Total ({total_duration:.2?})"),
-                color: RGBColor(200, 200, 200),
-                id: None,
-            });
-
-            // sort bars based based on their time
-            bars.sort_by(|a, b| {
-                if a.begin == b.begin {
-                    a.id.cmp(&b.id)
-                } else {
-                    a.begin.cmp(&b.begin)
-                }
-            });
-
-            let height = u32::try_from(bars.len()).map_err(|_| Error::TooLarge)?
-                * u32::try_from(BAR_HEIGHT).map_err(|_| Error::TooLarge)?
-                + 5;
-            let bar_width = f64::from(TARGET_WIDTH - 200) / latest as f64;
-
-            let mut content = String::new();
-
-            {
-                let size = (TARGET_WIDTH, height);
-                let drawing_area = SVGBackend::with_string(&mut content, size).into_drawing_area();
-
-                let font = ("monospace", BAR_HEIGHT - 10).into_font();
-                let text_style = TextStyle::from(font).color(&BLACK);
-
-                for (i, bar) in bars.iter().enumerate() {
-                    let i = i32::try_from(i).unwrap();
-
-                    let top_left = ((bar_width * bar.begin as f64) as i32, BAR_HEIGHT * i);
-                    let bottom_right = (
-                        (bar_width * (bar.begin + bar.length) as f64) as i32 + 2,
-                        BAR_HEIGHT * (i + 1),
-                    );
-
-                    // draw bar
-                    drawing_area
-                        .draw(&Rectangle::new(
-                            [top_left, bottom_right],
-                            ShapeStyle {
-                                color: bar.color.to_rgba(),
-                                filled: true,
-                                stroke_width: 0,
-                            },
-                        ))
-                        .unwrap();
-
-                    // draw label
-                    drawing_area
-                        .draw_text(
-                            &bar.label,
-                            &text_style,
-                            (
-                                (bar_width * bar.begin as f64) as i32 + 1,
-                                BAR_HEIGHT * i + 5,
-                            ),
-                        )
-                        .unwrap();
-                }
-            }
-            Ok(content)
-        }
+    /// Maximum number of tasks that ran concurrently.
+    #[must_use]
+    pub fn max_concurrent(&self) -> usize
+    where
+        T: std::hash::Hash + Eq + Clone,
+    {
+        self.iter_concurrent()
+            .map(|concurrent| concurrent.len())
+            .max()
+            .unwrap_or_default()
     }
 }

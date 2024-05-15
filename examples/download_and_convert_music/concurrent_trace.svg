@@ -1,26 +1,26 @@
 <svg width="2000" height="245" viewBox="0 0 2000 245" xmlns="http://www.w3.org/2000/svg">
 <rect x="0" y="0" width="1802" height="40" opacity="1" fill="#C8C8C8" stroke="none"/>
 <text x="1" y="5" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
-Total (1.65s)
+Total (1.76s)
 </text>
 <rect x="0" y="40" width="2" height="40" opacity="1" fill="#5AFF00" stroke="none"/>
 <text x="1" y="45" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
-Input((Url { scheme: &quot;https&quot;, cannot_be_a_base: false, username: &quot;&quot;, password: None, host: Some(Domain(&quot;incompetech.com&quot;)), port: None, path: &quot;/music/royalty-free/mp3-royaltyfree/I%20Got%20a%20Stick%20Arr%20Bryan%20Teoh.mp3&quot;, query: None, fragment: None }, &quot;audio1.mp3&quot;))
+Input((https://i...dio1.mp3&quot;))()
 </text>
 <rect x="0" y="80" width="2" height="40" opacity="1" fill="#FF00BB" stroke="none"/>
 <text x="1" y="85" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
-Input((Url { scheme: &quot;https&quot;, cannot_be_a_base: false, username: &quot;&quot;, password: None, host: Some(Domain(&quot;incompetech.com&quot;)), port: None, path: &quot;/music/royalty-free/mp3-royaltyfree/The%20Ice%20Giants.mp3&quot;, query: None, fragment: None }, &quot;audio2.mp3&quot;))
+Input((https://i...dio2.mp3&quot;))()
 </text>
-<rect x="0" y="120" width="1199" height="40" opacity="1" fill="#92FF00" stroke="none"/>
+<rect x="0" y="120" width="1125" height="40" opacity="1" fill="#92FF00" stroke="none"/>
 <text x="1" y="125" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
-Download { tmp_dir: TempDir { path: &quot;/tmp/.tmp5dMisD&quot; }, client: Client { accepts: Accepts, proxies: [Proxy(System({}), None)], referer: true, default_headers: {&quot;accept&quot;: &quot;*/*&quot;} } }
+Download { tmp_dir: &quot;/tmp/.tmp2LpaOa&quot; }((https://incompetech.com/music/royalty-free/mp3-royaltyfree/I%20Got%20a%20Stick%20Arr%20Bryan%20Teoh.mp3, &quot;audio1.mp3&quot;))
 </text>
-<rect x="0" y="160" width="1707" height="40" opacity="1" fill="#00F8FF" stroke="none"/>
+<rect x="0" y="160" width="1709" height="40" opacity="1" fill="#00F8FF" stroke="none"/>
 <text x="1" y="165" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
-Download { tmp_dir: TempDir { path: &quot;/tmp/.tmp5dMisD&quot; }, client: Client { accepts: Accepts, proxies: [Proxy(System({}), None)], referer: true, default_headers: {&quot;accept&quot;: &quot;*/*&quot;} } }
+Download { tmp_dir: &quot;/tmp/.tmp2LpaOa&quot; }((https://incompetech.com/music/royalty-free/mp3-royaltyfree/The%20Ice%20Giants.mp3, &quot;audio2.mp3&quot;))
 </text>
-<rect x="1705" y="200" width="97" height="40" opacity="1" fill="#00FF07" stroke="none"/>
-<text x="1706" y="205" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
-CombineAudio { tmp_dir: TempDir { path: &quot;/tmp/.tmp5dMisD&quot; } }
+<rect x="1707" y="200" width="95" height="40" opacity="1" fill="#00FF07" stroke="none"/>
+<text x="1708" y="205" dy="0.76em" text-anchor="start" font-family="monospace" font-size="24.193548387096776" opacity="1" fill="#000000">
+CombineAudio { tmp_dir: &quot;/tmp/.tmp2LpaOa&quot; }(&quot;/tmp/.tmp2LpaOa/audio1.mp3&quot;, &quot;/tmp/.tmp2LpaOa/audio2.mp3&quot;)
 </text>
 </svg>

@@ -71,10 +71,11 @@ layout-rs = { version = "0.1", optional = true }
 
 [dev-dependencies]
 color-eyre = "0"
+itertools = "0"
+env_logger = "0"
 tokio = { version = "1", features = ["full"] }
 # approx = "0.5"
 # tempdir = "0.3"
 # anyhow = "1"
 # lazy_static = "1"
-# itertools = "0"
 # criterion = "0"
