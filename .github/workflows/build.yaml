@@ -14,6 +14,7 @@ jobs:
   build:
     name: build ${{ matrix.package.name }} (${{ matrix.package.features }})
     runs-on: ${{ matrix.os }}
+    needs: [feature-matrix]
     strategy:
       fail-fast: false
       matrix:
