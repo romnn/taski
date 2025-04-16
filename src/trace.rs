@@ -74,7 +74,7 @@ pub mod iter {
         }
     }
 
-    impl<'a, T> Iterator for ConcurrentIter<'a, T>
+    impl<T> Iterator for ConcurrentIter<'_, T>
     where
         T: std::hash::Hash + Eq + Clone,
     {

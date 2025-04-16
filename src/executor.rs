@@ -119,7 +119,7 @@ where
                 );
 
                 match completed.state() {
-                    task::State::Pending | task::State::Running { .. } => {
+                    task::State::Pending | task::State::Running => {
                         unreachable!("completed task state is invalid");
                     }
                     task::State::Failed => {

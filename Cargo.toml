@@ -5,7 +5,7 @@ members = ["examples/*"]
 [package]
 name = "taski"
 version = "0.0.5"
-edition = "2021"
+edition = "2024"
 authors = ["romnn <contact@romnn.com>"]
 description = "async task DAG execution"
 license-file = "LICENSE"
@@ -45,7 +45,7 @@ denylist = ["default"]
 [dependencies]
 # downcast-trait = "0"
 # lazy_static = "1"
-thiserror = "1"
+thiserror = "2"
 log = "0"
 petgraph = { version = "0", features = ["graphmap", "stable_graph"] }
 async-trait = "0"

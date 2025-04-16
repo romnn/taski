@@ -2,26 +2,13 @@
 
 [<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/romnn/taski/build.yml?branch=main&label=build">](https://github.com/romnn/taski/actions/workflows/build.yml)
 [<img alt="test status" src="https://img.shields.io/github/actions/workflow/status/romnn/taski/test.yml?branch=main&label=test">](https://github.com/romnn/taski/actions/workflows/test.yml)
+[![dependency status](https://deps.rs/repo/github/romnn/taski/status.svg)](https://deps.rs/repo/github/romnn/taski)
 [<img alt="crates.io" src="https://img.shields.io/crates/v/taski">](https://crates.io/crates/taski)
 [<img alt="docs.rs" src="https://img.shields.io/docsrs/taski/latest?label=docs.rs">](https://docs.rs/taski)
 
-#### TODO
-
-- allow users to specify custom colors
-- support dynamic arguments too
-- add examples of competitor libs
-- add embedme
-- add documentation
-- add one more example
-- improve the layout library using plotters
-- NO: add a builder for the scheduler
-- NO: add a schedule trait
-
-- DONE: add more tests for different policies: fifo, priority, custom
-- DONE: use logging
-- DONE: remove the trace mutex? should not be required
-- DONE: add support for async closures / functions
-- DONE: use petgraph for the graph representation
+```bash
+cargo add taski
+```
 
 #### Design decisions
 
