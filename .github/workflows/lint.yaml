@@ -19,13 +19,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy
-      - run: task dev:tools:install --output group --output-group-error-only
+      - name: Install fontconfig
+        if: runner.os == 'Linux'
+        run: sudo apt-get install fontconfig
+      - name: Install dependencies
+        run: |
+          brew install romnn/tap/cargo-fc
+          brew install cargo-audit
+          brew install cargo-udeps
       - name: Audit
         run: task audit --output group --output-group-error-only
       - name: Check for unused dependencies
         run: task unused-dependencies --output group --output-group-error-only
       - name: Lint
-        run: task lint --output group --output-group-error-only
+        run: task lint:fc --output group --output-group-error-only
 
   spellcheck:
     runs-on: ubuntu-24.04
@@ -36,6 +43,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: Homebrew/actions/setup-homebrew@master
       - uses: dtolnay/rust-toolchain@stable
-      - run: task dev:tools:install --output group --output-group-error-only
+      - name: Install dependencies
+        run: brew install typos-cli
       - name: Spellcheck
         run: task spellcheck --output group --output-group-error-only
