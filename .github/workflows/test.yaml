@@ -13,7 +13,7 @@ jobs:
     uses: ./.github/workflows/feature-matrix.yaml
 
   test:
-    name: test ${{ matrix.package.name }} (${{ matrix.package.features }})
+    name: test ${{ matrix.package.name }} (${{ matrix.os }}, ${{ matrix.package.features }})
     runs-on: ${{ matrix.os }}
     needs: [feature-matrix]
     strategy:
@@ -29,6 +29,9 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: Homebrew/actions/setup-homebrew@master
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install fontconfig
+        if: runner.os == 'Linux'
+        run: apt-get install fontconfig
       - name: Test
         # prettier-ignore
         run: >-
