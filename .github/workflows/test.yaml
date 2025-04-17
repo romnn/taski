@@ -31,7 +31,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install fontconfig
         if: runner.os == 'Linux'
-        run: sudo apt-get install fontconfig
+        run: sudo apt-get install libfontconfig1-dev
       - name: Test
         # prettier-ignore
         run: >-
