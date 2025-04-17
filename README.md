@@ -1,7 +1,7 @@
 ## taski
 
-[<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/romnn/taski/build.yml?branch=main&label=build">](https://github.com/romnn/taski/actions/workflows/build.yml)
-[<img alt="test status" src="https://img.shields.io/github/actions/workflow/status/romnn/taski/test.yml?branch=main&label=test">](https://github.com/romnn/taski/actions/workflows/test.yml)
+[<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/romnn/taski/build.yaml?branch=main&label=build">](https://github.com/romnn/taski/actions/workflows/build.yaml)
+[<img alt="test status" src="https://img.shields.io/github/actions/workflow/status/romnn/taski/test.yaml?branch=main&label=test">](https://github.com/romnn/taski/actions/workflows/test.yaml)
 [![dependency status](https://deps.rs/repo/github/romnn/taski/status.svg)](https://deps.rs/repo/github/romnn/taski)
 [<img alt="crates.io" src="https://img.shields.io/crates/v/taski">](https://crates.io/crates/taski)
 [<img alt="docs.rs" src="https://img.shields.io/docsrs/taski/latest?label=docs.rs">](https://docs.rs/taski)
