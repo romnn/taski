@@ -14,9 +14,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Possible scheduling errors.
+/// A scheduling error.
 ///
-/// This covers preconditions that cause tasks to fail.
+/// This covers preconditions that cause tasks to fail during scheduling.
 #[derive(thiserror::Error, Debug, Clone, PartialEq)]
 pub enum Error {
     #[error("task dependency failed")]
@@ -31,7 +31,6 @@ pub(crate) type Fut = Pin<Box<dyn Future<Output = (dag::Idx, trace::Task)>>>;
 /// We cannot just use the TaskNode by itself,
 /// because we need to combine task nodes with different
 /// generic parameters.
-#[async_trait::async_trait]
 pub trait Schedulable<L> {
     /// Indicates if the schedulable task has succeeded.
     ///
@@ -155,28 +154,24 @@ impl<L> std::fmt::Display for dyn Schedulable<L> + Send + Sync + '_ {
 }
 
 impl<L> Hash for dyn Schedulable<L> + '_ {
-    #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.index().hash(state);
     }
 }
 
 impl<L> Hash for dyn Schedulable<L> + Send + Sync + '_ {
-    #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.index().hash(state);
     }
 }
 
 impl<L> PartialEq for dyn Schedulable<L> + '_ {
-    #[inline]
     fn eq(&self, other: &Self) -> bool {
         std::cmp::PartialEq::eq(&self.index(), &other.index())
     }
 }
 
 impl<L> PartialEq for dyn Schedulable<L> + Send + Sync + '_ {
-    #[inline]
     fn eq(&self, other: &Self) -> bool {
         std::cmp::PartialEq::eq(&self.index(), &other.index())
     }
@@ -201,11 +196,14 @@ impl<L> Default for Schedule<L> {
 }
 
 impl<L> Schedule<L> {
-    /// Add a new task to the graph.
+    /// Add a task to the graph.
     ///
-    /// Dependencies for the task must be references to
-    /// tasks that have already been added to the task
-    /// graph (Arc<TaskNode>)
+    /// A common `label` type may optionally be given to allow for custom
+    /// scheduling policies.
+    ///
+    /// Dependencies for the task must be references to tasks that
+    /// have already been added to the schedule and match the arguments
+    /// of the added task.
     pub fn add_node<I, O, T, D>(&mut self, task: T, deps: D, label: L) -> Arc<task::Node<I, O, L>>
     where
         T: task::Task<I, O> + Send + Sync + 'static,
@@ -227,6 +225,19 @@ impl<L> Schedule<L> {
         node
     }
 
+    /// Add a async closure to the graph.
+    ///
+    /// Using closures rather than tasks (`Task1`, `Task2` etc.) is more convenient
+    /// for smaller functions, but not as powerful.
+    /// In comparison, implementing the `Task` family of traits allows using a
+    /// custom `name` (rather than `std::fmt::Debug`) and `color` for rendering.
+    ///
+    /// A common `label` type may optionally be given to allow for custom
+    /// scheduling policies.
+    ///
+    /// Dependencies for the task must be references to tasks that
+    /// have already been added to the schedule and match the arguments
+    /// of the added task.
     pub fn add_closure<C, I, O, D>(
         &mut self,
         closure: C,
@@ -251,6 +262,10 @@ impl<L> Schedule<L> {
         node
     }
 
+    /// Add an input value without any dependencies to be used by other tasks.
+    ///
+    /// A common `label` type may optionally be given to allow for custom
+    /// scheduling policies.
     pub fn add_input<O>(&mut self, input: O, label: L) -> Arc<task::Node<(), O, L>>
     where
         O: std::fmt::Debug + Send + Sync + 'static,
@@ -261,8 +276,8 @@ impl<L> Schedule<L> {
 
     /// Marks all dependants as failed.
     ///
-    /// Optionally also marks all dependencies as failed if
-    /// they have no pending dependants.
+    /// Optionally also marks all dependencies as failed if they have
+    /// no pending dependants.
     ///
     /// TODO: is this correct and sufficient?
     /// TODO: really test this...
@@ -351,12 +366,20 @@ impl<L> Schedule<L> {
         }
     }
 
+    /// Iterator over all ready tasks in the schedule.
+    ///
+    /// A task is ready if all of its dependencies have successfully completed,
+    /// such that all inputs are available to the task.
     pub fn ready(&self) -> impl Iterator<Item = dag::Idx> + '_ {
         self.dag
             .node_indices()
             .filter(|idx| self.dag[*idx].is_ready())
     }
 
+    /// Iterator over all running tasks in the schedule.
+    ///
+    /// A task is in the `Running` state if it has been scheduled and its
+    /// task future is being awaited.
     pub fn running(&self) -> impl Iterator<Item = dag::Idx> + '_ {
         self.dag
             .node_indices()

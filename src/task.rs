@@ -510,6 +510,15 @@ where
 // TODO: add documentation
 macro_rules! task {
     ($name:ident: $( $type:ident ),*) => {
+        #[doc = concat!("A task with input(s) `", stringify!($( $type ),*), "` and output `O`.
+
+**Note**: Using the [`async_trait`]: <https://docs.rs/async-trait/latest/async_trait/> macro, ", stringify!($name), " can be written more easily.
+
+
+
+
+
+        ")]
         #[allow(
             non_snake_case,
             clippy::too_many_arguments,
@@ -517,6 +526,13 @@ macro_rules! task {
         )]
         #[async_trait::async_trait]
         pub trait $name<$( $type ),*, O>: std::fmt::Debug {
+
+            #[doc = concat!("Runs the task with inputs: `", stringify!($( $type ),*), "` and output `O`.
+
+The function **must** produce a `taski::task::Result<O>` to support fail-fast of dependent tasks.
+However, if you wish to propagate errors to dependent tasks, you can always wrap your own
+result, e.g. `taski::task::Result<Result<T, E>>`.
+            ")]
             async fn run(self: Box<Self>, $($type: $type),*) -> Result<O>;
 
             fn name(&self) -> String {
