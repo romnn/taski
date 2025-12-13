@@ -1,7 +1,7 @@
 use petgraph as pg;
 
 use crate::{
-    dag::{self, Dfs, DAG},
+    dag::{self, DAG, Dfs},
     dependency::Dependencies,
     task, trace,
 };

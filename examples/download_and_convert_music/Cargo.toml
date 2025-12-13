@@ -1,7 +1,7 @@
 [package]
 name = "download_and_convert_music_example"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 publish = false
 
 [dependencies]
@@ -14,7 +14,7 @@ clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0"
 futures = "0.3"
-async-process = "1"
+async-process = "2"
 
 # downloading
 reqwest = { version = "0", features = ["stream"] }

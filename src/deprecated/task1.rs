@@ -52,7 +52,7 @@ mod sealed {
         }
     }
 
-    /// head H, tail and U that wil be 
+    /// head H, tail and U that will be 
     impl<H, T: HList, U: HList> Combine<U> for Product<H, T>
     where
         T: Combine<U>,

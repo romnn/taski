@@ -93,7 +93,6 @@ mod tests {
 
     pub fn init_test() {
         INIT.call_once(|| {
-            std::env::set_var("RUST_LOG", "debug");
             env_logger::builder().is_test(true).init();
             color_eyre::install().unwrap();
         });

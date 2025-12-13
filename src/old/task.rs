@@ -1,6 +1,6 @@
 use super::error::{Error, TaskError};
 use async_trait::async_trait;
-use downcast_rs::{impl_downcast, Downcast};
+use downcast_rs::{Downcast, impl_downcast};
 use std::collections::hash_map::{Entry, HashMap};
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
@@ -9,7 +9,7 @@ use std::pin::Pin;
 // add dependencies:
 // lets say: outputs artwork image data
 // idea: for all the Tasks, make them return the same outcome type
-// then, each Task with prerequisits can get them as a vector of those outcomes
+// then, each Task with prerequisites can get them as a vector of those outcomes
 
 pub type TaskFun<C, I, O, E> = Box<
     dyn FnOnce(C, HashMap<I, O>) -> Pin<Box<dyn Future<Output = Result<O, E>> + Send + Sync>>
