@@ -322,6 +322,7 @@ pub mod schedule {
                             rounded: 0,
                             font_size: 15,
                         },
+                        properties: None,
                         src_port: None,
                         dst_port: None,
                     };
