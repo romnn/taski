@@ -26,7 +26,7 @@ cargo add taski
 This is the smallest “real” example: create a schedule, add some inputs, add a task that depends on them, run the executor, then read the output.
 
 ```rust
-use taski::{Dependency, PolicyExecutor, Schedule, TaskResult};
+use taski::{PolicyExecutor, Schedule, TaskResult};
 
 #[derive(Debug)]
 struct Sum;
@@ -39,7 +39,7 @@ impl taski::Task2<i32, i32, i32> for Sum {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), taski::schedule::BuildError> {
     taski::make_guard!(guard);
     let mut schedule = Schedule::new(guard);
 
@@ -47,12 +47,15 @@ async fn main() {
     let two = schedule.add_input(2, ());
 
     // `Sum` takes (i32, i32) and produces i32.
-    let three = schedule.add_node(Sum, (one, two), ());
+    let three = schedule.add_node(Sum, (one, two), ())?;
 
     let mut executor = PolicyExecutor::fifo(schedule);
-    executor.run().await;
+    executor.run().await.ok();
 
-    assert_eq!(three.output(), Some(3));
+    let output = executor.execution().output_ref(three).copied();
+    assert_eq!(output, Some(3));
+
+    Ok(())
 }
 ```
 
@@ -85,20 +88,16 @@ Tasks are written by implementing one of the `TaskN` traits (`Task0` has no inpu
 
 Internally, those traits bridge to a single trait (`taski::task::Task<I, O>`) by packing inputs into a tuple.
 
-The schedule-side dependency plumbing is expressed through `taski::dependency::Dependencies<I, L>`.
+The schedule-side dependency plumbing is expressed through `taski::dependency::Dependencies<'id, I>`.
 
-- `taski` currently ships tuple implementations for:
-  - `()` (no dependencies)
-  - `(dep,)` (one dependency)
-  - `(dep1, dep2)` (two dependencies)
-- For `Task3..Task8` style tasks you can still use `taski`, but you’ll need to provide your own `Dependencies<(T1, T2, T3, ..), L>` implementation for whatever dependency container you want to use.
+- `taski` ships tuple implementations for `()` and for tuples of handles up to 8 dependencies.
 
 ### Outputs and dependencies
 
-Nodes returned by `add_input`/`add_node`/`add_closure` implement `taski::Dependency<O, L>`.
+Nodes returned by `add_input`/`add_node`/`add_closure` return a typed `Handle<'id, O>`.
 
-- You can call `node.output()` after execution to fetch the output.
-- Outputs are **cloned** when they are used as inputs for downstream tasks. This is very efficient for small values (e.g. integers) and keeps the dependency API simple.
+- You can call `executor.execution().output_ref(handle)` after execution to borrow the output.
+- Outputs are **cloned** when they are used as inputs for downstream tasks.
   - If outputs are large (or not cheaply cloneable), return `Arc<T>` (or another shared handle) from your tasks.
 
 ### `PolicyExecutor<P, L>`
@@ -115,10 +114,23 @@ A policy is anything implementing:
 
 ```rust
 pub trait Policy<'id, L> {
-    fn arbitrate(
-        &self,
-        ready: &[taski::dag::TaskId<'id>],
+    fn reset(&mut self);
+
+    fn on_task_ready(&mut self, task_id: taski::dag::TaskId<'id>, schedule: &taski::Schedule<'id, L>);
+
+    fn on_task_started(&mut self, task_id: taski::dag::TaskId<'id>, schedule: &taski::Schedule<'id, L>);
+
+    fn on_task_finished(
+        &mut self,
+        task_id: taski::dag::TaskId<'id>,
+        state: taski::task::State,
         schedule: &taski::Schedule<'id, L>,
+    );
+
+    fn next_task(
+        &mut self,
+        schedule: &taski::Schedule<'id, L>,
+        execution: &taski::execution::Execution<'id>,
     ) -> Option<taski::dag::TaskId<'id>>;
 }
 ```
@@ -174,6 +186,8 @@ At a high level `PolicyExecutor::run()`:
   - If it succeeded, newly-unblocked dependants become ready.
   - If it failed, the executor follows a fail-fast strategy (dependent tasks can be failed due to failed dependencies).
 
+`PolicyExecutor::run()` returns a `RunReport` on success and a `RunError` if execution stalls.
+
 ## Design decisions
 
 This section preserves the original design notes, but with more context.
@@ -224,5 +238,5 @@ There exist many different task scheduler implementations. The goals of this imp
 - Support async tasks.
 - Support directed acyclic graphs (DAGs).
 - Allow custom scheduling policies based on a custom label type, which can enforce complex constraints.
-- Allow concurrent adding of tasks while the scheduler is executing, so that tasks can be streamed into the scheduler.
-  - This is part of the design direction (and existed in earlier iterations of the crate), but the current `Schedule` + `PolicyExecutor` API is focused on building the full graph first and then running it.
+
+This crate is focused on building the full graph first and then running it.

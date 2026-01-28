@@ -25,25 +25,27 @@ pub fn should_render() -> bool {
 // Render the DAG graph and an execution trace.
 //
 // NOTE: this requires the "render" feature of taski.
-pub fn render<P, L>(executor: &taski::PolicyExecutor<P, L>, suffix: &str) {
+pub fn render<P, L: 'static>(
+    executor: &taski::PolicyExecutor<P, L>,
+    suffix: &str,
+) -> eyre::Result<()> {
     if !should_render() {
-        return;
+        return Ok(());
     }
     executor
-        .schedule
-        .render_to(manifest_dir().join(format!("taski_{suffix}_graph.svg")))
-        .unwrap();
+        .schedule()
+        .render_to(manifest_dir().join(format!("taski_{suffix}_graph.svg")))?;
     executor
-        .trace
-        .render_to(manifest_dir().join(format!("taski_{suffix}_trace.svg")))
-        .unwrap();
+        .trace()
+        .render_to(manifest_dir().join(format!("taski_{suffix}_trace.svg")))?;
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     let async_dag_result = async_dag::run().await;
-    let taski_result = taski_tasks::run().await;
-    let taski_closures_result = taski_closures::run().await;
+    let taski_result = taski_tasks::run().await?;
+    let taski_closures_result = taski_closures::run().await?;
     assert_eq!(async_dag_result, Some(7));
     assert_eq!(taski_result, Some(7));
     assert_eq!(taski_closures_result, Some(7));

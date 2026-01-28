@@ -1,5 +1,6 @@
 #![allow(clippy::just_underscores_and_digits, clippy::used_underscore_binding)]
 
+use color_eyre::eyre;
 use taski::{PolicyExecutor, Schedule, TaskResult};
 
 #[derive(Debug)]
@@ -17,7 +18,7 @@ impl taski::Task2<i32, i32, i32> for SumTwoNumbers {
     }
 }
 
-pub async fn run() -> Option<i32> {
+pub async fn run() -> eyre::Result<Option<i32>> {
     taski::make_guard!(guard);
     let mut graph = Schedule::new(guard);
     let _1 = graph.add_input(1, ());
@@ -25,24 +26,24 @@ pub async fn run() -> Option<i32> {
     let _4 = graph.add_input(4, ());
 
     // sets _1 and _2 as _3's dependencies (arguments)
-    let _3 = graph.add_node(SumTwoNumbers {}, (_1, _2), ());
+    let _3 = graph.add_node(SumTwoNumbers {}, (_1, _2), ())?;
 
     // sets _3 and _4 as _7's dependencies (arguments)
-    let _7 = graph.add_node(SumTwoNumbers {}, (_3, _4), ());
+    let _7 = graph.add_node(SumTwoNumbers {}, (_3, _4), ())?;
 
     let mut executor = PolicyExecutor::fifo(graph);
-    executor.run().await;
+    executor.run().await?;
 
     // optional: render the DAG graph and an execution trace.
-    super::render(&executor, "tasks");
+    super::render(&executor, "tasks")?;
 
-    executor.execution.output_ref(_7).cloned()
+    Ok(executor.execution().output_ref(_7).cloned())
 }
 
 #[cfg(test)]
 mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn it_works() {
-        assert_eq!(super::run().await, Some(7));
+        assert_eq!(super::run().await.unwrap(), Some(7));
     }
 }

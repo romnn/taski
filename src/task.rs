@@ -7,7 +7,7 @@ use crate::{
 };
 
 use futures::Future;
-use parking_lot::RwLock;
+use parking_lot::Mutex;
 use std::any::Any;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
@@ -294,11 +294,17 @@ pub struct Node<'id, I, O, L> {
     pub dependencies: Box<dyn Dependencies<'id, I> + Send + Sync + 'id>,
     pub index: dag::TaskId<'id>,
 
-    pub(crate) inner: Arc<RwLock<NodeInner<I, O>>>,
+    pub(crate) inner: Arc<Mutex<NodeInner<I, O>>>,
 }
 
 impl<'id, I, O, L> Node<'id, I, O, L> {
-    pub fn new<T, D>(task: T, deps: D, label: L, index: dag::TaskId<'id>) -> Self
+    pub fn new<T, D>(
+        task: T,
+        deps: D,
+        dependency_task_ids: Vec<dag::TaskId<'id>>,
+        label: L,
+        index: dag::TaskId<'id>,
+    ) -> Self
     where
         T: task::Task<I, O> + Send + Sync + 'static,
         D: Dependencies<'id, I> + Send + Sync + 'id,
@@ -306,20 +312,25 @@ impl<'id, I, O, L> Node<'id, I, O, L> {
         let color = task.color();
         #[cfg(feature = "render")]
         let color = Some(color.unwrap_or_else(|| crate::render::color_from_id(index)));
-        let dependency_task_ids = deps.task_ids();
         Self {
             task_name: task.name(),
             color,
             label,
             created_at: Instant::now(),
             dependency_task_ids,
-            inner: Arc::new(RwLock::new(task::NodeInner::new(task))),
+            inner: Arc::new(Mutex::new(task::NodeInner::new(task))),
             dependencies: Box::new(deps),
             index,
         }
     }
 
-    pub fn closure<C, D>(closure: Box<C>, deps: D, label: L, index: dag::TaskId<'id>) -> Self
+    pub fn closure<C, D>(
+        closure: Box<C>,
+        deps: D,
+        dependency_task_ids: Vec<dag::TaskId<'id>>,
+        label: L,
+        index: dag::TaskId<'id>,
+    ) -> Self
     where
         C: Closure<I, O> + Send + Sync + 'static,
         D: Dependencies<'id, I> + Send + Sync + 'id,
@@ -329,14 +340,13 @@ impl<'id, I, O, L> Node<'id, I, O, L> {
         let color = None;
         #[cfg(feature = "render")]
         let color = Some(crate::render::color_from_id(index));
-        let dependency_task_ids = deps.task_ids();
         Self {
             task_name: "<unnamed>".to_string(),
             color,
             label,
             created_at: Instant::now(),
             dependency_task_ids,
-            inner: Arc::new(RwLock::new(task::NodeInner::closure(closure))),
+            inner: Arc::new(Mutex::new(task::NodeInner::closure(closure))),
             dependencies: Box::new(deps),
             index,
         }
@@ -411,7 +421,7 @@ where
             return None;
         };
 
-        let task = self.inner.write().task.take()?;
+        let task = self.inner.lock().task.take()?;
 
         let idx = self.index();
         #[cfg(feature = "render")]

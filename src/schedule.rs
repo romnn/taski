@@ -14,7 +14,10 @@ use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+static NEXT_SCHEDULE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// A scheduling error.
 ///
@@ -23,6 +26,16 @@ use std::time::{Duration, Instant};
 pub enum Error {
     #[error("task dependency failed")]
     FailedDependency,
+}
+
+/// A schedule construction error.
+#[derive(thiserror::Error, Debug, Clone, PartialEq)]
+pub enum BuildError {
+    #[error("dependency belongs to a different schedule")]
+    DifferentScheduleDependency,
+
+    #[error("dependency is not contained in the schedule")]
+    MissingDependency,
 }
 
 pub(crate) type Fut<'id> =
@@ -177,9 +190,10 @@ impl<'id, L: 'id> PartialEq for dyn Schedulable<'id, L> + '_ {
 impl<'id, L: 'id> Eq for dyn Schedulable<'id, L> + '_ {}
 
 /// A task schedule based on a DAG of task nodes.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Schedule<'id, L: 'id> {
     _guard: generativity::Id<'id>,
+    schedule_id: u64,
     pub(crate) dag: DAG<task::Ref<'id, L>>,
 }
 
@@ -188,8 +202,19 @@ impl<'id, L: 'id> Schedule<'id, L> {
     pub fn new(guard: Guard<'id>) -> Self {
         Self {
             _guard: guard.into(),
+            schedule_id: NEXT_SCHEDULE_ID.fetch_add(1, Ordering::Relaxed),
             dag: DAG::default(),
         }
+    }
+
+    #[must_use]
+    pub(crate) fn schedule_id(&self) -> u64 {
+        self.schedule_id
+    }
+
+    #[must_use]
+    pub(crate) fn task_id(&self, idx: dag::Idx) -> dag::TaskId<'id> {
+        dag::TaskId::new(self.schedule_id, idx)
     }
 
     /// Add a task to the graph.
@@ -205,7 +230,7 @@ impl<'id, L: 'id> Schedule<'id, L> {
         task: T,
         deps: D,
         label: L,
-    ) -> dag::Handle<'id, O>
+    ) -> Result<dag::Handle<'id, O>, BuildError>
     where
         T: task::Task<I, O> + Send + Sync + 'static,
         D: Dependencies<'id, I> + Send + Sync + 'id,
@@ -213,17 +238,29 @@ impl<'id, L: 'id> Schedule<'id, L> {
         O: std::fmt::Debug + Send + Sync + 'static,
         L: std::fmt::Debug + Send + Sync + 'static,
     {
-        let index = dag::TaskId::new(dag::Idx::new(self.dag.node_count()));
-        let node = Arc::new(task::Node::new(task, deps, label, index));
+        let index = dag::TaskId::new(self.schedule_id, dag::Idx::new(self.dag.node_count()));
+        let dependency_task_ids = deps.task_ids();
+        for &dep_task_id in dependency_task_ids.iter() {
+            if dep_task_id.schedule_id() != self.schedule_id {
+                return Err(BuildError::DifferentScheduleDependency);
+            }
+            if !self.dag.contains_node(dep_task_id.idx()) {
+                return Err(BuildError::MissingDependency);
+            }
+        }
+
+        let node = Arc::new(task::Node::new(task, deps, dependency_task_ids, label, index));
         let node_index = self.dag.add_node(node.clone());
-        assert_eq!(node_index, index.idx());
+        if node_index != index.idx() {
+            log::error!("node index mismatch");
+        }
 
         // add edges to dependencies
         for &dep_task_id in node.dependencies() {
             self.dag.add_edge(dep_task_id.idx(), node_index, ());
         }
 
-        dag::Handle::new(index)
+        Ok(dag::Handle::new(index))
     }
 
     /// Add a async closure to the graph.
@@ -244,7 +281,7 @@ impl<'id, L: 'id> Schedule<'id, L> {
         closure: C,
         deps: D,
         label: L,
-    ) -> dag::Handle<'id, O>
+    ) -> Result<dag::Handle<'id, O>, BuildError>
     where
         C: task::Closure<I, O> + Send + Sync + 'static,
         D: Dependencies<'id, I> + Send + Sync + 'id,
@@ -252,15 +289,33 @@ impl<'id, L: 'id> Schedule<'id, L> {
         O: std::fmt::Debug + Send + Sync + 'static,
         L: std::fmt::Debug + Send + Sync + 'static,
     {
-        let index = dag::TaskId::new(dag::Idx::new(self.dag.node_count()));
+        let index = dag::TaskId::new(self.schedule_id, dag::Idx::new(self.dag.node_count()));
         let closure = Box::new(closure);
-        let node = Arc::new(task::Node::closure(closure, deps, label, index));
+        let dependency_task_ids = deps.task_ids();
+        for &dep_task_id in dependency_task_ids.iter() {
+            if dep_task_id.schedule_id() != self.schedule_id {
+                return Err(BuildError::DifferentScheduleDependency);
+            }
+            if !self.dag.contains_node(dep_task_id.idx()) {
+                return Err(BuildError::MissingDependency);
+            }
+        }
+
+        let node = Arc::new(task::Node::closure(
+            closure,
+            deps,
+            dependency_task_ids,
+            label,
+            index,
+        ));
         let node_index = self.dag.add_node(node.clone());
-        assert_eq!(node_index, index.idx());
+        if node_index != index.idx() {
+            log::error!("node index mismatch");
+        }
         for &dep_task_id in node.dependencies() {
             self.dag.add_edge(dep_task_id.idx(), node_index, ());
         }
-        dag::Handle::new(index)
+        Ok(dag::Handle::new(index))
     }
 
     /// Add an input value without any dependencies to be used by other tasks.
@@ -272,7 +327,9 @@ impl<'id, L: 'id> Schedule<'id, L> {
         O: std::fmt::Debug + Send + Sync + 'static,
         L: std::fmt::Debug + Send + Sync + 'static,
     {
+        #[expect(clippy::expect_used, reason = "inputs cannot have dependencies")]
         self.add_node(task::Input::from(input), (), label)
+            .expect("add input")
     }
 
     /// Marks all dependants as failed.
@@ -298,7 +355,7 @@ impl<'id, L: 'id> Schedule<'id, L> {
                 .dag
                 .neighbors_directed(idx.idx(), pg::Direction::Outgoing)
             {
-                let dependant_idx = dag::TaskId::new(dependant_idx);
+                let dependant_idx = dag::TaskId::new(self.schedule_id, dependant_idx);
                 if !processed.insert(dependant_idx) {
                     continue;
                 }
@@ -327,7 +384,7 @@ impl<'id, L: 'id> Schedule<'id, L> {
         self.dag
             .node_indices()
             .filter(|idx| self.dag[*idx].is_ready(execution))
-            .map(dag::TaskId::new)
+            .map(|idx| dag::TaskId::new(self.schedule_id, idx))
     }
 
     /// Iterator over all running tasks in the schedule.
@@ -341,7 +398,7 @@ impl<'id, L: 'id> Schedule<'id, L> {
         self.dag
             .node_indices()
             .filter(|idx| self.dag[*idx].state(execution).is_running())
-            .map(dag::TaskId::new)
+            .map(|idx| dag::TaskId::new(self.schedule_id, idx))
     }
 
     #[must_use]

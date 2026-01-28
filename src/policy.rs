@@ -70,7 +70,7 @@ impl<'id, L: 'id> Policy<'id, L> for Fifo {
 
     fn next_task(
         &mut self,
-        _schedule: &Schedule<'id, L>,
+        schedule: &Schedule<'id, L>,
         execution: &Execution<'id>,
     ) -> Option<dag::TaskId<'id>> {
         if let Some(limit) = self.max_concurrent {
@@ -80,7 +80,7 @@ impl<'id, L: 'id> Policy<'id, L> for Fifo {
         }
 
         while let Some(task_idx) = self.ready.pop_front() {
-            let task_id = dag::TaskId::new(task_idx);
+            let task_id = schedule.task_id(task_idx);
             if execution.state(task_id).is_pending() {
                 return Some(task_id);
             }
@@ -150,7 +150,7 @@ where
 
         let mut best: Option<(usize, &L)> = None;
         for (idx, &task_idx) in self.ready.iter().enumerate() {
-            let task_id = dag::TaskId::new(task_idx);
+            let task_id = schedule.task_id(task_idx);
             if !execution.state(task_id).is_pending() {
                 continue;
             }
@@ -167,6 +167,6 @@ where
         }
 
         let (best_idx, _) = best?;
-        Some(dag::TaskId::new(self.ready.remove(best_idx)))
+        Some(schedule.task_id(self.ready.remove(best_idx)))
     }
 }

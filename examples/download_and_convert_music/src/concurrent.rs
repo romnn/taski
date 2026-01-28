@@ -30,29 +30,29 @@ pub async fn run(options: Options) -> eyre::Result<()> {
     let i1 = graph.add_input((first_url, "audio1.mp3".to_string()), Label::Input);
     let i2 = graph.add_input((second_url, "audio2.mp3".to_string()), Label::Input);
 
-    let d1 = graph.add_node(download.clone(), (i1,), Label::Download);
-    let d2 = graph.add_node(download.clone(), (i2,), Label::Download);
+    let d1 = graph.add_node(download.clone(), (i1,), Label::Download)?;
+    let d2 = graph.add_node(download.clone(), (i2,), Label::Download)?;
 
-    let result = graph.add_node(combine, (d1, d2), Label::Combine);
+    let result = graph.add_node(combine, (d1, d2), Label::Combine)?;
 
     let mut executor = PolicyExecutor::fifo(graph);
 
     // run all tasks
-    executor.run().await;
+    executor.run().await?;
 
     if super::should_render() {
         let path = super::manifest_dir().join("concurrent_graph.svg");
         println!("rendering graph to {}", path.display());
-        executor.schedule.render_to(path)?;
+        executor.schedule().render_to(path)?;
 
         let path = super::manifest_dir().join("concurrent_trace.svg");
         println!("rendering trace to {}", path.display());
-        executor.trace.render_to(path)?;
+        executor.trace().render_to(path)?;
     }
 
     // copy to example dir so we can test
     if let Some(path) = output_path {
-        if let Some(output_path) = executor.execution.output_ref(result).cloned() {
+        if let Some(output_path) = executor.execution().output_ref(result).cloned() {
             tokio::fs::copy(output_path, path).await?;
         }
     }

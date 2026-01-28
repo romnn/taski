@@ -22,6 +22,9 @@ pub use task::{Closure1, Closure2, Closure3, Closure4, Closure5, Closure6, Closu
 pub use task::{Error, Input as TaskInput, Ref as TaskRef, Result as TaskResult};
 pub use task::{Task0, Task1, Task2, Task3, Task4, Task5, Task6, Task7, Task8};
 
+ #[cfg(doctest)]
+ mod compile_fail_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,11 +63,11 @@ mod tests {
             if should_render() {
                 let path = test_result_file!("graph.svg");
                 println!("rendering graph to {}", path.display());
-                $executor.schedule.render_to(path)?;
+                $executor.schedule().render_to(path)?;
 
                 let path = test_result_file!("trace.svg");
                 println!("rendering trace to {}", path.display());
-                $executor.trace.render_to(path)?;
+                $executor.trace().render_to(path)?;
             }
         }};
     }
@@ -138,23 +141,23 @@ mod tests {
         make_guard!(guard);
         let mut graph = Schedule::new(guard);
 
-        let n1_p1 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 1 });
-        let n2_p1 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 1 });
-        let n3_p2 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 2 });
-        let n4_p1 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 1 });
-        let n5_p4 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 4 });
-        let n6_p3 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 3 });
+        let n1_p1 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 1 })?;
+        let n2_p1 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 1 })?;
+        let n3_p2 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 2 })?;
+        let n4_p1 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 1 })?;
+        let n5_p4 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 4 })?;
+        let n6_p3 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 3 })?;
 
         let mut executor = PolicyExecutor::priority(graph).max_concurrent(Some(1));
 
         // run all tasks
-        executor.run().await;
+        executor.run().await?;
 
         // get the trace
-        executor.trace.sort_chronologically();
-        assert_eq!(executor.trace.max_concurrent(), 1);
+        executor.trace_mut().sort_chronologically();
+        assert_eq!(executor.trace().max_concurrent(), 1);
 
-        let running_order: Vec<_> = executor.trace.tasks.iter().map(|(t, _)| *t).collect();
+        let running_order: Vec<_> = executor.trace().tasks.iter().map(|(t, _)| *t).collect();
         let expected_order = [
             // high priority
             n5_p4.task_id(),
@@ -234,7 +237,7 @@ mod tests {
                     let Some(task_idx) = self.ready.pop_front() else {
                         break;
                     };
-                    let task_id = dag::TaskId::new(task_idx);
+                    let task_id = schedule.task_id(task_idx);
                     if !execution.state(task_id).is_pending() {
                         continue;
                     }
@@ -296,20 +299,20 @@ mod tests {
         let mut graph = Schedule::new(guard);
 
         let download = Download {};
-        let d1 = graph.add_node(download.clone(), (), Label::Download);
-        let d2 = graph.add_node(download.clone(), (), Label::Download);
-        let d3 = graph.add_node(download.clone(), (), Label::Download);
-        let d4 = graph.add_node(download.clone(), (), Label::Download);
-        let d5 = graph.add_node(download.clone(), (), Label::Download);
-        let d6 = graph.add_node(download.clone(), (), Label::Download);
+        let d1 = graph.add_node(download.clone(), (), Label::Download)?;
+        let d2 = graph.add_node(download.clone(), (), Label::Download)?;
+        let d3 = graph.add_node(download.clone(), (), Label::Download)?;
+        let d4 = graph.add_node(download.clone(), (), Label::Download)?;
+        let d5 = graph.add_node(download.clone(), (), Label::Download)?;
+        let d6 = graph.add_node(download.clone(), (), Label::Download)?;
 
         let process = Process {};
-        let _p1 = graph.add_node(process.clone(), (d1,), Label::Process);
-        let _p2 = graph.add_node(process.clone(), (d2,), Label::Process);
-        let _p3 = graph.add_node(process.clone(), (d3,), Label::Process);
-        let _p4 = graph.add_node(process.clone(), (d4,), Label::Process);
-        let _p5 = graph.add_node(process.clone(), (d5,), Label::Process);
-        let _p6 = graph.add_node(process.clone(), (d6,), Label::Process);
+        let _p1 = graph.add_node(process.clone(), (d1,), Label::Process)?;
+        let _p2 = graph.add_node(process.clone(), (d2,), Label::Process)?;
+        let _p3 = graph.add_node(process.clone(), (d3,), Label::Process)?;
+        let _p4 = graph.add_node(process.clone(), (d4,), Label::Process)?;
+        let _p5 = graph.add_node(process.clone(), (d5,), Label::Process)?;
+        let _p6 = graph.add_node(process.clone(), (d6,), Label::Process)?;
 
         let mut executor = PolicyExecutor::custom(
             graph,
@@ -321,7 +324,7 @@ mod tests {
                 running_by_label: HashMap::new(),
             },
         );
-        executor.run().await;
+        executor.run().await?;
 
         render!(&executor);
         Ok(())
@@ -368,22 +371,22 @@ mod tests {
 
         let i0 = graph.add_input("Hello".to_string(), Label::Input);
 
-        let n0 = graph.add_node(identity.clone(), (i0,), Label::Identity);
-        let n1 = graph.add_node(identity.clone(), (n0,), Label::Identity);
-        let n2 = graph.add_node(identity.clone(), (n0,), Label::Identity);
-        let result_node = graph.add_node(combine.clone(), (n1, n2), Label::Combine);
+        let n0 = graph.add_node(identity.clone(), (i0,), Label::Identity)?;
+        let n1 = graph.add_node(identity.clone(), (n0,), Label::Identity)?;
+        let n2 = graph.add_node(identity.clone(), (n0,), Label::Identity)?;
+        let result_node = graph.add_node(combine.clone(), (n1, n2), Label::Combine)?;
 
         let mut executor = PolicyExecutor::fifo(graph);
 
         // run all tasks
-        executor.run().await;
+        executor.run().await?;
 
-        assert_eq!(executor.trace.max_concurrent(), 2);
+        assert_eq!(executor.trace().max_concurrent(), 2);
 
         render!(&executor);
 
         // check that output value of the scheduler is correct
-        let output = executor.execution.output_ref(result_node).cloned();
+        let output = executor.execution().output_ref(result_node).cloned();
         assert_eq!(output.as_deref(), Some("Hello Hello"));
 
         Ok(())

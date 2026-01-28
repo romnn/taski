@@ -6,6 +6,7 @@ pub type DAG<N> = pg::stable_graph::StableDiGraph<N, (), usize>;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TaskId<'id> {
+    schedule_id: u64,
     idx: Idx,
     _invariant: PhantomData<fn(&'id ()) -> &'id ()>,
 }
@@ -26,11 +27,17 @@ impl<'id, O> Clone for Handle<'id, O> {
 
 impl<'id> TaskId<'id> {
     #[must_use]
-    pub(crate) fn new(idx: Idx) -> Self {
+    pub(crate) fn new(schedule_id: u64, idx: Idx) -> Self {
         Self {
+            schedule_id,
             idx,
             _invariant: PhantomData,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn schedule_id(self) -> u64 {
+        self.schedule_id
     }
 
     #[must_use]
