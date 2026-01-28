@@ -1,7 +1,11 @@
 use crate::{dag, schedule::Schedule};
 
-pub trait Policy<L> {
-    fn arbitrate(&self, ready: &[dag::Idx], schedule: &Schedule<L>) -> Option<dag::Idx>;
+pub trait Policy<'id, L> {
+    fn arbitrate(
+        &self,
+        ready: &[dag::TaskId<'id>],
+        schedule: &Schedule<'id, L>,
+    ) -> Option<dag::TaskId<'id>>;
 }
 
 #[derive(Debug, Default, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -23,8 +27,12 @@ impl Fifo {
     }
 }
 
-impl<L> Policy<L> for Fifo {
-    fn arbitrate(&self, ready: &[dag::Idx], schedule: &Schedule<L>) -> Option<dag::Idx> {
+impl<'id, L: 'id> Policy<'id, L> for Fifo {
+    fn arbitrate(
+        &self,
+        ready: &[dag::TaskId<'id>],
+        schedule: &Schedule<'id, L>,
+    ) -> Option<dag::TaskId<'id>> {
         if let Some(limit) = self.max_concurrent {
             if schedule.running().count() >= limit {
                 // do not schedule new task
@@ -55,11 +63,15 @@ impl Priority {
     }
 }
 
-impl<L> Policy<L> for Priority
+impl<'id, L> Policy<'id, L> for Priority
 where
-    L: std::cmp::Ord,
+    L: std::cmp::Ord + 'id,
 {
-    fn arbitrate(&self, ready: &[dag::Idx], schedule: &Schedule<L>) -> Option<dag::Idx> {
+    fn arbitrate(
+        &self,
+        ready: &[dag::TaskId<'id>],
+        schedule: &Schedule<'id, L>,
+    ) -> Option<dag::TaskId<'id>> {
         if let Some(limit) = self.max_concurrent {
             if schedule.running().count() >= limit {
                 // do not schedule new task
@@ -69,7 +81,7 @@ where
         // schedule highest priority task from the ready queue
         ready
             .iter()
-            .max_by_key(|&&idx| schedule.dag[idx].label())
+            .max_by_key(|&&idx| schedule.dag[idx.idx()].label())
             .copied()
     }
 }

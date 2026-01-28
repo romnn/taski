@@ -40,7 +40,8 @@ impl taski::Task2<i32, i32, i32> for Sum {
 
 #[tokio::main]
 async fn main() {
-    let mut schedule = Schedule::default();
+    taski::make_guard!(guard);
+    let mut schedule = Schedule::new(guard);
 
     let one = schedule.add_input(1, ());
     let two = schedule.add_input(2, ());
@@ -113,9 +114,12 @@ The executor is intentionally separate from the schedule.
 A policy is anything implementing:
 
 ```rust
-pub trait Policy<L> {
-    fn arbitrate(&self, ready: &[taski::dag::Idx], schedule: &taski::Schedule<L>)
-        -> Option<taski::dag::Idx>;
+pub trait Policy<'id, L> {
+    fn arbitrate(
+        &self,
+        ready: &[taski::dag::TaskId<'id>],
+        schedule: &taski::Schedule<'id, L>,
+    ) -> Option<taski::dag::TaskId<'id>>;
 }
 ```
 

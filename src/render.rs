@@ -76,6 +76,8 @@ pub mod trace {
     pub enum Error {
         #[error("the trace is too large to be rendered")]
         TooLarge,
+        #[error("failed to render trace: {0}")]
+        Render(String),
         #[error(transparent)]
         Io(#[from] std::io::Error),
     }
@@ -154,7 +156,8 @@ pub mod trace {
                 .unwrap_or_default();
 
             // compute the total duration of the trace.
-            let total_duration = Duration::from_nanos(latest.try_into().unwrap());
+            let latest_nanos: u64 = latest.try_into().map_err(|_| Error::TooLarge)?;
+            let total_duration = Duration::from_nanos(latest_nanos);
 
             bars.push(Bar {
                 begin: 0,
@@ -188,7 +191,7 @@ pub mod trace {
                 let text_style = TextStyle::from(font).color(&BLACK);
 
                 for (i, bar) in bars.iter().enumerate() {
-                    let i = i32::try_from(i).unwrap();
+                    let i = i32::try_from(i).map_err(|_| Error::TooLarge)?;
 
                     let top_left = ((bar_width * bar.begin as f64) as i32, BAR_HEIGHT * i);
                     let bottom_right = (
@@ -206,7 +209,7 @@ pub mod trace {
                                 stroke_width: 0,
                             },
                         ))
-                        .unwrap();
+                        .map_err(|err| Error::Render(format!("{err:?}")))?;
 
                     // draw label
                     drawing_area
@@ -218,7 +221,7 @@ pub mod trace {
                                 BAR_HEIGHT * i + 5,
                             ),
                         )
-                        .unwrap();
+                        .map_err(|err| Error::Render(format!("{err:?}")))?;
                 }
             }
             Ok(content)
@@ -243,7 +246,7 @@ pub mod schedule {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    impl<L> Schedule<L> {
+    impl<'id, L: 'id> Schedule<'id, L> {
         /// Render the task graph as an svg image.
         ///
         /// # Errors
@@ -274,7 +277,7 @@ pub mod schedule {
         /// Render the task graph as an svg image.
         #[must_use]
         pub fn render(&self) -> String {
-            fn node<LL>(node: &task::Ref<LL>) -> shapes::Element {
+            fn node<'a, LL: 'a>(node: &task::Ref<'a, LL>) -> shapes::Element {
                 let node_style = style::StyleAttr {
                     line_color: Color::new(0x0000_00FF),
                     line_width: 2,
@@ -293,8 +296,10 @@ pub mod schedule {
 
             let mut graph = VisualGraph::new(Orientation::TopToBottom);
 
-            let mut handles: HashMap<Arc<dyn Schedulable<L>>, layout::adt::dag::NodeHandle> =
-                HashMap::new();
+            let mut handles: HashMap<
+                Arc<dyn Schedulable<'id, L> + 'id>,
+                layout::adt::dag::NodeHandle,
+            > = HashMap::new();
 
             for idx in self.dag.node_indices() {
                 let task = &self.dag[idx];

@@ -1,7 +1,29 @@
 use petgraph as pg;
+use std::marker::PhantomData;
 
 pub type Idx = pg::graph::NodeIndex<usize>;
 pub type DAG<N> = pg::stable_graph::StableDiGraph<N, (), usize>;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TaskId<'id> {
+    idx: Idx,
+    _invariant: PhantomData<fn(&'id ()) -> &'id ()>,
+}
+
+impl<'id> TaskId<'id> {
+    #[must_use]
+    pub(crate) fn new(idx: Idx) -> Self {
+        Self {
+            idx,
+            _invariant: PhantomData,
+        }
+    }
+
+    #[must_use]
+    pub fn idx(self) -> Idx {
+        self.idx
+    }
+}
 
 /// Depth first search.
 ///

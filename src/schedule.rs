@@ -1,13 +1,13 @@
 use petgraph as pg;
 
 use crate::{
-    dag::{self, DAG, Dfs},
+    dag::{self, DAG},
     dependency::Dependencies,
     task, trace,
 };
 
 use futures::Future;
-use pg::graph::NodeIndex;
+use generativity::Guard;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
@@ -23,7 +23,8 @@ pub enum Error {
     FailedDependency,
 }
 
-pub(crate) type Fut = Pin<Box<dyn Future<Output = (dag::Idx, trace::Task)>>>;
+pub(crate) type Fut<'id> =
+    Pin<Box<dyn Future<Output = (dag::TaskId<'id>, trace::Task)> + Send + 'id>>;
 
 /// Trait representing a schedulable task node.
 ///
@@ -31,7 +32,7 @@ pub(crate) type Fut = Pin<Box<dyn Future<Output = (dag::Idx, trace::Task)>>>;
 /// We cannot just use the TaskNode by itself,
 /// because we need to combine task nodes with different
 /// generic parameters.
-pub trait Schedulable<L> {
+pub trait Schedulable<'id, L: 'id>: Send + Sync + 'id {
     /// Indicates if the schedulable task has succeeded.
     ///
     /// A task is succeeded if its output is available.
@@ -73,7 +74,7 @@ pub trait Schedulable<L> {
     fn completed_at(&self) -> Option<Instant>;
 
     /// Unique index of the task node in the DAG graph
-    fn index(&self) -> dag::Idx;
+    fn index(&self) -> dag::TaskId<'id>;
 
     /// Run the schedulable task.
     ///
@@ -89,7 +90,7 @@ pub trait Schedulable<L> {
     ///
     /// Users must not manually run the task before all
     /// dependencies have completed.
-    fn run(&self) -> Option<Fut>;
+    fn run(&self) -> Option<Fut<'id>>;
 
     /// Returns the name of the schedulable task
     fn name(&self) -> &str;
@@ -101,13 +102,13 @@ pub trait Schedulable<L> {
     fn color(&self) -> &Option<crate::render::Rgba>;
 
     /// Returns the dependencies of the schedulable task
-    fn dependencies(&self) -> Vec<Arc<dyn Schedulable<L>>>;
+    fn dependencies(&self) -> Vec<Arc<dyn Schedulable<'id, L> + 'id>>;
 
     /// Indicates if the schedulable task is ready for execution.
     ///
     /// A task is ready if all its dependencies succeeded.
     fn is_ready(&self) -> bool {
-        self.dependencies().iter().all(|d| d.succeeded())
+        self.state().is_pending() && self.dependencies().iter().all(|d| d.succeeded())
     }
 
     /// The running_time time of the task.
@@ -129,73 +130,48 @@ pub trait Schedulable<L> {
     }
 }
 
-impl<L> std::fmt::Debug for dyn Schedulable<L> + '_ {
+impl<'id, L: 'id> std::fmt::Debug for dyn Schedulable<'id, L> + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.signature())
     }
 }
 
-impl<L> std::fmt::Debug for dyn Schedulable<L> + Send + Sync + '_ {
+impl<'id, L: 'id> std::fmt::Display for dyn Schedulable<'id, L> + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.signature())
     }
 }
 
-impl<L> std::fmt::Display for dyn Schedulable<L> + '_ {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.signature())
-    }
-}
-
-impl<L> std::fmt::Display for dyn Schedulable<L> + Send + Sync + '_ {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.signature())
-    }
-}
-
-impl<L> Hash for dyn Schedulable<L> + '_ {
+impl<'id, L: 'id> Hash for dyn Schedulable<'id, L> + '_ {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.index().hash(state);
     }
 }
 
-impl<L> Hash for dyn Schedulable<L> + Send + Sync + '_ {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.index().hash(state);
-    }
-}
-
-impl<L> PartialEq for dyn Schedulable<L> + '_ {
+impl<'id, L: 'id> PartialEq for dyn Schedulable<'id, L> + '_ {
     fn eq(&self, other: &Self) -> bool {
         std::cmp::PartialEq::eq(&self.index(), &other.index())
     }
 }
 
-impl<L> PartialEq for dyn Schedulable<L> + Send + Sync + '_ {
-    fn eq(&self, other: &Self) -> bool {
-        std::cmp::PartialEq::eq(&self.index(), &other.index())
-    }
-}
-
-impl<L> Eq for dyn Schedulable<L> + '_ {}
-
-impl<L> Eq for dyn Schedulable<L> + Send + Sync + '_ {}
+impl<'id, L: 'id> Eq for dyn Schedulable<'id, L> + '_ {}
 
 /// A task schedule based on a DAG of task nodes.
 #[derive(Debug, Clone)]
-pub struct Schedule<L> {
-    pub dag: DAG<task::Ref<L>>,
+pub struct Schedule<'id, L: 'id> {
+    _guard: generativity::Id<'id>,
+    pub(crate) dag: DAG<task::Ref<'id, L>>,
 }
 
-impl<L> Default for Schedule<L> {
-    fn default() -> Self {
+impl<'id, L: 'id> Schedule<'id, L> {
+    #[must_use]
+    pub fn new(guard: Guard<'id>) -> Self {
         Self {
+            _guard: guard.into(),
             dag: DAG::default(),
         }
     }
-}
 
-impl<L> Schedule<L> {
     /// Add a task to the graph.
     ///
     /// A common `label` type may optionally be given to allow for custom
@@ -204,22 +180,27 @@ impl<L> Schedule<L> {
     /// Dependencies for the task must be references to tasks that
     /// have already been added to the schedule and match the arguments
     /// of the added task.
-    pub fn add_node<I, O, T, D>(&mut self, task: T, deps: D, label: L) -> Arc<task::Node<I, O, L>>
+    pub fn add_node<I, O, T, D>(
+        &mut self,
+        task: T,
+        deps: D,
+        label: L,
+    ) -> Arc<task::Node<'id, I, O, L>>
     where
         T: task::Task<I, O> + Send + Sync + 'static,
-        D: Dependencies<I, L> + Send + Sync + 'static,
+        D: Dependencies<'id, I, L> + Send + Sync + 'id,
         I: std::fmt::Debug + Send + Sync + 'static,
         O: std::fmt::Debug + Send + Sync + 'static,
-        L: std::fmt::Debug + Sync + 'static,
+        L: std::fmt::Debug + Send + Sync + 'static,
     {
-        let index = dag::Idx::new(self.dag.node_count());
+        let index = dag::TaskId::new(dag::Idx::new(self.dag.node_count()));
         let node = Arc::new(task::Node::new(task, deps, label, index));
         let node_index = self.dag.add_node(node.clone());
-        assert_eq!(node_index, index);
+        assert_eq!(node_index, index.idx());
 
         // add edges to dependencies
         for dep in node.dependencies() {
-            self.dag.add_edge(dep.index(), node_index, ());
+            self.dag.add_edge(dep.index().idx(), node_index, ());
         }
 
         node
@@ -243,21 +224,21 @@ impl<L> Schedule<L> {
         closure: C,
         deps: D,
         label: L,
-    ) -> Arc<task::Node<I, O, L>>
+    ) -> Arc<task::Node<'id, I, O, L>>
     where
         C: task::Closure<I, O> + Send + Sync + 'static,
-        D: Dependencies<I, L> + Send + Sync + 'static,
+        D: Dependencies<'id, I, L> + Send + Sync + 'id,
         I: std::fmt::Debug + Send + Sync + 'static,
         O: std::fmt::Debug + Send + Sync + 'static,
-        L: std::fmt::Debug + Sync + 'static,
+        L: std::fmt::Debug + Send + Sync + 'static,
     {
-        let index = dag::Idx::new(self.dag.node_count());
+        let index = dag::TaskId::new(dag::Idx::new(self.dag.node_count()));
         let closure = Box::new(closure);
         let node = Arc::new(task::Node::closure(closure, deps, label, index));
         let node_index = self.dag.add_node(node.clone());
-        assert_eq!(node_index, index);
+        assert_eq!(node_index, index.idx());
         for dep in node.dependencies() {
-            self.dag.add_edge(dep.index(), node_index, ());
+            self.dag.add_edge(dep.index().idx(), node_index, ());
         }
         node
     }
@@ -266,10 +247,10 @@ impl<L> Schedule<L> {
     ///
     /// A common `label` type may optionally be given to allow for custom
     /// scheduling policies.
-    pub fn add_input<O>(&mut self, input: O, label: L) -> Arc<task::Node<(), O, L>>
+    pub fn add_input<O>(&mut self, input: O, label: L) -> Arc<task::Node<'id, (), O, L>>
     where
         O: std::fmt::Debug + Send + Sync + 'static,
-        L: std::fmt::Debug + Sync + 'static,
+        L: std::fmt::Debug + Send + Sync + 'static,
     {
         self.add_node(task::Input::from(input), (), label)
     }
@@ -281,88 +262,28 @@ impl<L> Schedule<L> {
     ///
     /// TODO: is this correct and sufficient?
     /// TODO: really test this...
-    pub fn fail_dependants(&mut self, root: dag::Idx, dependencies: bool) {
+    pub fn fail_dependants(&mut self, root: dag::TaskId<'id>) {
         let mut queue = vec![root];
         let mut processed = HashSet::new();
         processed.insert(root);
 
         while let Some(idx) = queue.pop() {
-            dbg!(&queue);
-            dbg!(&processed);
+            for dependant_idx in self
+                .dag
+                .neighbors_directed(idx.idx(), pg::Direction::Outgoing)
+            {
+                let dependant_idx = dag::TaskId::new(dependant_idx);
+                if !processed.insert(dependant_idx) {
+                    continue;
+                }
 
-            // fail all dependants
-            let mut new_processed = vec![];
+                let dependant = &self.dag[dependant_idx.idx()];
+                if dependant.state().is_pending() {
+                    dependant.fail(task::Error::new(Error::FailedDependency));
+                }
 
-            let dependants = pg::visit::Reversed(&self.dag);
-
-            // // check if we can get the neighbors
-            // use pg::visit::IntoNeighborsDirected;
-            //
-            // self.dag
-            //     .neighbors_directed(task.index().into(), Incoming);
-            // dependants.neighbors_directed(task.index().into(), Incoming);
-
-            // let dfs = Dfs::new(&dependants, task);
-            // let dfs = Dfs::new(&dependants, task.index().into());
-            let dfs = Dfs::new(&dependants, idx);
-            // let dfs = dfs.filter(|dep: &task::Ref<L>| {
-            let mut dfs = dfs.filter(|dep_idx: &NodeIndex<usize>| {
-                let dep = &self.dag[*dep_idx];
-                dep.state().is_pending() && !processed.contains(dep_idx)
-            });
-
-            while let Some(dep_idx) = dfs.next(&self.dag) {
-                // todo: link to failed dependency
-                // if processed.insert(dependant) {
-                let dependant = &self.dag[dep_idx];
-                // new_processed.push(dependant);
-
-                dependant.fail(task::Error::new(Error::FailedDependency));
-                // processed.insert(dependant);
-
-                new_processed.push(dep_idx);
-                queue.push(dep_idx);
-
-                //
+                queue.push(dependant_idx);
             }
-
-            // let dependants = self
-            //     .dependants_dag
-            //     .traverse(task, None, |dep: &&task::Ref<L>| {
-            //         matches!(dep.state(), task::CompletionResult::Pending)
-            //             && !processed.contains(dep)
-            //     });
-            // for (_, dependant) in dependants {
-            //     // todo: link to failed dependency
-            //     // if processed.insert(dependant) {
-            //     new_processed.push(dependant);
-            //     dependant.fail(Arc::new(task::Error::FailedDependency));
-            //     // processed.insert(dependant);
-            //     queue.push(dependant);
-            //     // }
-            // }
-            // fail all dependencies of task
-            if dependencies {
-                // fail all dependencies
-                todo!();
-                // let dependencies =
-                //     self.dependency_dag
-                //         .traverse(task, None, |dep: &&task::Ref<L>| {
-                //             matches!(dep.state(), task::CompletionResult::Pending)
-                //                 && !processed.contains(task)
-                //         });
-                // for (_, dependency) in dependencies {
-                //     // fail dependency
-                //     // if processed.insert(dependency) {
-                //     dependency.fail(Arc::new(task::Error::FailedDependency));
-                //     // processed.insert(dependency);
-                //     queue.push(dependency);
-                //     new_processed.push(dependency);
-                //     // }
-                // }
-            }
-
-            processed.extend(new_processed);
         }
     }
 
@@ -370,19 +291,36 @@ impl<L> Schedule<L> {
     ///
     /// A task is ready if all of its dependencies have successfully completed,
     /// such that all inputs are available to the task.
-    pub fn ready(&self) -> impl Iterator<Item = dag::Idx> + '_ {
+    pub fn ready(&self) -> impl Iterator<Item = dag::TaskId<'id>> + '_ {
         self.dag
             .node_indices()
             .filter(|idx| self.dag[*idx].is_ready())
+            .map(dag::TaskId::new)
     }
 
     /// Iterator over all running tasks in the schedule.
     ///
     /// A task is in the `Running` state if it has been scheduled and its
     /// task future is being awaited.
-    pub fn running(&self) -> impl Iterator<Item = dag::Idx> + '_ {
+    pub fn running(&self) -> impl Iterator<Item = dag::TaskId<'id>> + '_ {
         self.dag
             .node_indices()
             .filter(|idx| self.dag[*idx].state().is_running())
+            .map(dag::TaskId::new)
+    }
+
+    #[must_use]
+    pub fn task(&self, task_id: dag::TaskId<'id>) -> &task::Ref<'id, L> {
+        &self.dag[task_id.idx()]
+    }
+
+    #[must_use]
+    pub fn task_label(&self, task_id: dag::TaskId<'id>) -> &L {
+        self.task(task_id).label()
+    }
+
+    #[must_use]
+    pub fn task_state(&self, task_id: dag::TaskId<'id>) -> task::State {
+        self.task(task_id).state()
     }
 }

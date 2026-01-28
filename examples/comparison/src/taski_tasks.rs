@@ -18,7 +18,8 @@ impl taski::Task2<i32, i32, i32> for SumTwoNumbers {
 }
 
 pub async fn run() -> Option<i32> {
-    let mut graph = Schedule::default();
+    taski::make_guard!(guard);
+    let mut graph = Schedule::new(guard);
     let _1 = graph.add_input(1, ());
     let _2 = graph.add_input(2, ());
     let _4 = graph.add_input(4, ());

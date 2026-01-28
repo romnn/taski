@@ -5,19 +5,19 @@ use std::pin::Pin;
 /// An executor for a task schedule
 #[derive(Debug)]
 #[allow(clippy::module_name_repetitions)]
-pub struct PolicyExecutor<P, L> {
-    pub schedule: Schedule<L>,
+pub struct PolicyExecutor<'id, P, L> {
+    pub schedule: Schedule<'id, L>,
     pub policy: P,
-    pub trace: trace::Trace<dag::Idx>,
+    pub trace: trace::Trace<dag::TaskId<'id>>,
 }
 
-impl<P, L> PolicyExecutor<P, L>
+impl<'id, P, L> PolicyExecutor<'id, P, L>
 where
     L: 'static,
 {
     /// Creates a new executor with a custom policy.
     #[must_use]
-    pub fn custom(schedule: Schedule<L>, policy: P) -> Self {
+    pub fn custom(schedule: Schedule<'id, L>, policy: P) -> Self {
         Self {
             schedule,
             policy,
@@ -26,13 +26,13 @@ where
     }
 }
 
-impl<L> PolicyExecutor<policy::Fifo, L>
+impl<'id, L> PolicyExecutor<'id, policy::Fifo, L>
 where
     L: 'static,
 {
     /// Creates a new executor with a FIFO policy.
     #[must_use]
-    pub fn fifo(schedule: Schedule<L>) -> Self {
+    pub fn fifo(schedule: Schedule<'id, L>) -> Self {
         Self {
             schedule,
             trace: trace::Trace::new(),
@@ -47,7 +47,7 @@ where
     }
 }
 
-impl<L> PolicyExecutor<policy::Priority, L>
+impl<'id, L> PolicyExecutor<'id, policy::Priority, L>
 where
     L: std::cmp::Ord + 'static,
 {
@@ -55,7 +55,7 @@ where
     ///
     /// The priority is given by the task label.
     #[must_use]
-    pub fn priority(schedule: Schedule<L>) -> Self {
+    pub fn priority(schedule: Schedule<'id, L>) -> Self {
         Self {
             schedule,
             trace: trace::Trace::new(),
@@ -70,9 +70,9 @@ where
     }
 }
 
-impl<P, L> PolicyExecutor<P, L>
+impl<'id, P, L> PolicyExecutor<'id, P, L>
 where
-    P: policy::Policy<L>,
+    P: policy::Policy<'id, L>,
     L: 'static,
 {
     /// Runs the tasks in the graph
@@ -80,10 +80,9 @@ where
         use futures::stream::{FuturesUnordered, StreamExt};
         use std::future::Future;
 
-        type TaskFut = dyn Future<Output = (dag::Idx, trace::Task)>;
-        type TaskFuts = FuturesUnordered<Pin<Box<TaskFut>>>;
-
-        let mut running_tasks: TaskFuts = FuturesUnordered::new();
+        let mut running_tasks: FuturesUnordered<
+            Pin<Box<dyn Future<Output = (dag::TaskId<'id>, trace::Task)> + Send + 'id>>,
+        > = FuturesUnordered::new();
 
         let mut ready: Vec<_> = self.schedule.ready().collect();
 
@@ -99,7 +98,7 @@ where
                 assert!(ready.contains(&idx));
                 ready.retain(|r| r != &idx);
 
-                let task = &self.schedule.dag[idx];
+                let task = &self.schedule.dag[idx.idx()];
                 log::debug!("adding {:?}", &task);
 
                 if let Some(task_fut) = task.run() {
@@ -111,7 +110,7 @@ where
             if let Some((idx, traced)) = running_tasks.next().await {
                 self.trace.tasks.push((idx, traced));
 
-                let completed = &self.schedule.dag[idx];
+                let completed = &self.schedule.dag[idx.idx()];
                 log::debug!(
                     "{} completed with status: {:?}",
                     &completed,
@@ -119,12 +118,10 @@ where
                 );
 
                 match completed.state() {
-                    task::State::Pending | task::State::Running => {
-                        unreachable!("completed task state is invalid");
-                    }
+                    task::State::Pending | task::State::Running => continue,
                     task::State::Failed => {
                         // fail fast
-                        self.schedule.fail_dependants(idx, true);
+                        self.schedule.fail_dependants(idx);
                     }
                     task::State::Succeeded => {}
                 }
@@ -141,7 +138,8 @@ where
                 let dependants = self
                     .schedule
                     .dag
-                    .neighbors_directed(idx, petgraph::Direction::Outgoing);
+                    .neighbors_directed(idx.idx(), petgraph::Direction::Outgoing)
+                    .map(dag::TaskId::new);
 
                 // let _dependants = dependants
                 //     .clone()
@@ -150,7 +148,7 @@ where
                 // dbg!(_dependants);
 
                 let ready_dependants = dependants.filter(|&dep_idx| {
-                    let dep = &self.schedule.dag[dep_idx];
+                    let dep = &self.schedule.dag[dep_idx.idx()];
                     // dbg!(dep);
                     // println!(
                     //     "dependant {} has dependencies: {:?}",

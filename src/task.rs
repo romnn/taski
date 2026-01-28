@@ -6,25 +6,31 @@ use crate::{
 };
 
 use futures::Future;
+use parking_lot::RwLock;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Instant;
 
 fn summarize(s: &dyn std::fmt::Debug, max_length: usize) -> String {
     let s = format!("{s:?}");
-    if s.len() > max_length {
-        format!(
-            "{}...{}",
-            &s[..(max_length / 2)],
-            &s[s.len() - (max_length / 2)..s.len()]
-        )
-    } else {
-        s.to_string()
+    let char_count = s.chars().count();
+    if char_count <= max_length {
+        return s;
     }
+
+    let head_len = max_length / 2;
+    let tail_len = max_length.saturating_sub(head_len);
+
+    let head: String = s.chars().take(head_len).collect();
+    let tail: String = s
+        .chars()
+        .skip(char_count.saturating_sub(tail_len))
+        .collect();
+    format!("{head}...{tail}")
 }
 
-pub type Ref<L> = Arc<dyn Schedulable<L>>;
+pub type Ref<'id, L> = Arc<dyn Schedulable<'id, L> + 'id>;
 
 pub struct Error(pub Box<dyn std::error::Error + Send + Sync + 'static>);
 
@@ -248,7 +254,6 @@ where
 /// `TaskNodes` are only generic (static) over the inputs and
 /// outputs, since that is of importance for using a task node
 /// as a dependency for another task
-#[derive()]
 pub(crate) struct NodeInner<I, O> {
     pub(crate) started_at: Option<Instant>,
     pub(crate) completed_at: Option<Instant>,
@@ -284,23 +289,22 @@ impl<I, O> NodeInner<I, O> {
     }
 }
 
-#[derive()]
-pub struct Node<I, O, L> {
+pub struct Node<'id, I, O, L> {
     pub task_name: String,
     pub color: Option<crate::render::Rgba>,
     pub label: L,
     pub created_at: Instant,
-    pub dependencies: Box<dyn Dependencies<I, L> + Send + Sync>,
-    pub index: dag::Idx,
+    pub dependencies: Box<dyn Dependencies<'id, I, L> + Send + Sync + 'id>,
+    pub index: dag::TaskId<'id>,
 
     pub(crate) inner: Arc<RwLock<NodeInner<I, O>>>,
 }
 
-impl<I, O, L> Node<I, O, L> {
-    pub fn new<T, D>(task: T, deps: D, label: L, index: dag::Idx) -> Self
+impl<'id, I, O, L> Node<'id, I, O, L> {
+    pub fn new<T, D>(task: T, deps: D, label: L, index: dag::TaskId<'id>) -> Self
     where
         T: task::Task<I, O> + Send + Sync + 'static,
-        D: Dependencies<I, L> + Send + Sync + 'static,
+        D: Dependencies<'id, I, L> + Send + Sync + 'id,
     {
         let color = task.color();
         #[cfg(feature = "render")]
@@ -316,10 +320,10 @@ impl<I, O, L> Node<I, O, L> {
         }
     }
 
-    pub fn closure<C, D>(closure: Box<C>, deps: D, label: L, index: dag::Idx) -> Self
+    pub fn closure<C, D>(closure: Box<C>, deps: D, label: L, index: dag::TaskId<'id>) -> Self
     where
         C: Closure<I, O> + Send + Sync + 'static,
-        D: Dependencies<I, L> + Send + Sync + 'static,
+        D: Dependencies<'id, I, L> + Send + Sync + 'id,
         I: Send + 'static,
     {
         #[cfg(not(feature = "render"))]
@@ -338,18 +342,18 @@ impl<I, O, L> Node<I, O, L> {
     }
 }
 
-impl<I, O, L> Hash for Node<I, O, L> {
+impl<I, O, L> Hash for Node<'_, I, O, L> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // hash the index
         self.index.hash(state);
     }
 }
 
-impl<I, O, L> std::fmt::Display for Node<I, O, L>
+impl<I, O, L> std::fmt::Display for Node<'_, I, O, L>
 where
     I: std::fmt::Debug + Send + Sync + 'static,
     O: std::fmt::Debug + Send + Sync + 'static,
-    L: std::fmt::Debug + Sync + 'static,
+    L: std::fmt::Debug + Send + Sync + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.signature())
@@ -357,24 +361,24 @@ where
 }
 
 #[async_trait::async_trait]
-impl<I, O, L> Schedulable<L> for Node<I, O, L>
+impl<'id, I, O, L> Schedulable<'id, L> for Node<'id, I, O, L>
 where
     I: std::fmt::Debug + Send + Sync + 'static,
     O: std::fmt::Debug + Send + Sync + 'static,
-    L: std::fmt::Debug + Sync + 'static,
+    L: std::fmt::Debug + Send + Sync + 'static,
 {
     fn succeeded(&self) -> bool {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         inner.state.did_succeed()
     }
 
     fn fail(&self, err: Error) {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write();
         inner.state = InternalState::Failed(err);
     }
 
     fn state(&self) -> State {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         match inner.state {
             InternalState::Pending(_) => State::Pending,
             InternalState::Running => State::Running,
@@ -384,7 +388,7 @@ where
     }
 
     fn as_argument(&self) -> String {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         match inner.state {
             InternalState::Pending(_) => "<pending>".to_string(),
             InternalState::Running => "<running>".to_string(),
@@ -400,22 +404,27 @@ where
     }
 
     fn started_at(&self) -> Option<Instant> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         inner.started_at
     }
 
     fn completed_at(&self) -> Option<Instant> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         inner.completed_at
     }
 
-    fn index(&self) -> dag::Idx {
+    fn index(&self) -> dag::TaskId<'id> {
         self.index
     }
 
-    fn run(&self) -> Option<crate::schedule::Fut> {
+    fn run(&self) -> Option<crate::schedule::Fut<'id>> {
+        // get the inputs from the dependencies
+        let Some(inputs) = self.dependencies.inputs() else {
+            return None;
+        };
+
         let task = {
-            let mut inner = self.inner.write().unwrap();
+            let mut inner = self.inner.write();
 
             if let InternalState::Pending(_) = inner.state {
                 // set the state to running
@@ -424,20 +433,13 @@ where
                 let InternalState::Pending(task) = task else {
                     return None;
                 };
+                inner.started_at.get_or_insert(Instant::now());
                 task
             } else {
                 // already ran
                 return None;
             }
         };
-
-        // get the inputs from the dependencies
-        let inputs = self.dependencies.inputs().unwrap();
-
-        {
-            let mut inner = self.inner.write().unwrap();
-            inner.started_at.get_or_insert(Instant::now());
-        }
 
         let idx = self.index();
         #[cfg(feature = "render")]
@@ -455,7 +457,7 @@ where
 
             let end = Instant::now();
 
-            let mut inner = inner.write().unwrap();
+            let mut inner = inner.write();
             inner.completed_at.get_or_insert(end);
 
             assert!(inner.state.is_running());
@@ -487,19 +489,19 @@ where
         &self.color
     }
 
-    fn dependencies(&self) -> Vec<Arc<dyn Schedulable<L>>> {
+    fn dependencies(&self) -> Vec<Arc<dyn Schedulable<'id, L> + 'id>> {
         self.dependencies.to_vec()
     }
 }
 
-impl<I, O, L> Dependency<O, L> for Node<I, O, L>
+impl<'id, I, O, L> Dependency<'id, O, L> for Node<'id, I, O, L>
 where
     I: std::fmt::Debug + Send + Sync + 'static,
     O: std::fmt::Debug + Clone + Send + Sync + 'static,
-    L: std::fmt::Debug + Sync + 'static,
+    L: std::fmt::Debug + Send + Sync + 'static,
 {
     fn output(&self) -> Option<O> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         match inner.state {
             InternalState::Succeeded(ref output) => Some(output.clone()),
             _ => None,

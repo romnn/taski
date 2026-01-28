@@ -13,7 +13,7 @@ pub struct Task {
 impl Task {
     /// Duration of the traced task.
     #[must_use]
-    pub fn duraton(&self) -> Duration {
+    pub fn duration(&self) -> Duration {
         self.end.saturating_duration_since(self.start)
     }
 }
@@ -116,7 +116,7 @@ impl<T> Trace<T> {
 
     /// Iterator over all concurrent tasks
     #[must_use]
-    pub fn iter_concurrent(&self) -> iter::ConcurrentIter<T>
+    pub fn iter_concurrent(&self) -> iter::ConcurrentIter<'_, T>
     where
         T: std::hash::Hash + Eq + Clone,
     {

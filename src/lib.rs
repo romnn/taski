@@ -11,6 +11,7 @@ pub mod trace;
 
 pub use crate::dependency::Dependency;
 pub use executor::PolicyExecutor;
+pub use generativity::make_guard;
 pub use policy::Policy;
 pub use schedule::Schedule;
 
@@ -33,7 +34,7 @@ mod tests {
                 std::any::type_name::<T>()
             }
             let name = type_name_of(f);
-            &name[..name.len() - 3]
+            name.strip_suffix("::f").unwrap_or(name)
         }};
     }
 
@@ -89,13 +90,25 @@ mod tests {
     {
     }
 
-    static INIT: std::sync::Once = std::sync::Once::new();
+    static INIT: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
 
-    pub fn init_test() {
-        INIT.call_once(|| {
-            env_logger::builder().is_test(true).init();
-            color_eyre::install().unwrap();
+    pub fn init_test() -> eyre::Result<()> {
+        let result = INIT.get_or_init(|| {
+            if let Err(err) = env_logger::builder().is_test(true).try_init() {
+                return Err(format!("{err:?}"));
+            }
+
+            if let Err(err) = color_eyre::install() {
+                return Err(format!("{err:?}"));
+            }
+
+            Ok(())
         });
+
+        match result {
+            Ok(()) => Ok(()),
+            Err(err) => Err(eyre::eyre!(err)),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -117,9 +130,10 @@ mod tests {
             }
         }
 
-        init_test();
+        init_test()?;
 
-        let mut graph = Schedule::default();
+        make_guard!(guard);
+        let mut graph = Schedule::new(guard);
 
         let n1_p1 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 1 });
         let n2_p1 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 1 });
@@ -170,25 +184,23 @@ mod tests {
             limits: HashMap<Label, usize>,
         }
 
-        impl Policy<Label> for CustomPolicy {
+        impl<'id> Policy<'id, Label> for CustomPolicy {
             fn arbitrate(
                 &self,
-                ready: &[dag::Idx],
-                schedule: &schedule::Schedule<Label>,
-            ) -> Option<dag::Idx> {
+                ready: &[dag::TaskId<'id>],
+                schedule: &schedule::Schedule<'id, Label>,
+            ) -> Option<dag::TaskId<'id>> {
                 let mut running_tasks: HashMap<Label, usize> = HashMap::new();
                 for idx in schedule.running() {
-                    let label = schedule.dag[idx].label();
+                    let label = schedule.dag[idx.idx()].label();
                     *running_tasks.entry(*label).or_insert(0) += 1;
                 }
 
                 // dbg!(&running_tasks);
 
                 for idx in ready {
-                    let label = schedule.dag[*idx].label();
+                    let label = schedule.dag[idx.idx()].label();
                     let running = running_tasks.get(label).unwrap_or(&0);
-                    let limit = self.limits.get(label);
-                    dbg!((label, running, limit));
                     match self.limits.get(label) {
                         Some(limit) if running < limit => return Some(*idx),
                         None => return Some(*idx),
@@ -221,7 +233,7 @@ mod tests {
         struct Process {}
 
         #[async_trait::async_trait]
-        impl Task1<usize, usize> for Process {
+        impl crate::task::Task1<usize, usize> for Process {
             async fn run(self: Box<Self>, _: usize) -> TaskResult<usize> {
                 sleep(Duration::from_secs(1)).await;
                 Ok(0)
@@ -235,9 +247,10 @@ mod tests {
             }
         }
 
-        init_test();
+        init_test()?;
 
-        let mut graph = Schedule::default();
+        make_guard!(guard);
+        let mut graph = Schedule::new(guard);
 
         let download = Download {};
         let d1 = graph.add_node(download.clone(), (), Label::Download);
@@ -300,12 +313,13 @@ mod tests {
             }
         }
 
-        init_test();
+        init_test()?;
 
         let combine = Combine {};
         let identity = Identity {};
 
-        let mut graph = Schedule::default();
+        make_guard!(guard);
+        let mut graph = Schedule::new(guard);
 
         let i0 = graph.add_input("Hello".to_string(), Label::Input);
 
@@ -319,7 +333,6 @@ mod tests {
         // run all tasks
         executor.run().await;
 
-        // dbg!(executor.trace.iter_concurrent().collect::<Vec<_>>());
         assert_eq!(executor.trace.max_concurrent(), 2);
 
         render!(&executor);

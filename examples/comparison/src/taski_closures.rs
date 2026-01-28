@@ -8,7 +8,8 @@ async fn sum_two_numbers(lhs: i32, rhs: i32) -> TaskResult<i32> {
 }
 
 pub async fn run() -> Option<i32> {
-    let mut graph = Schedule::default();
+    taski::make_guard!(guard);
+    let mut graph = Schedule::new(guard);
     let _1 = graph.add_input(1, ());
     let _2 = graph.add_input(2, ());
     // note: `add_input` could also be written as a closure

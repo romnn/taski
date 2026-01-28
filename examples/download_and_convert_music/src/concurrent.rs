@@ -25,7 +25,8 @@ pub async fn run(options: Options) -> eyre::Result<()> {
         tmp_dir: tmp_dir.clone(),
     };
 
-    let mut graph = taski::Schedule::default();
+    taski::make_guard!(guard);
+    let mut graph = taski::Schedule::new(guard);
     let i1 = graph.add_input((first_url, "audio1.mp3".to_string()), Label::Input);
     let i2 = graph.add_input((second_url, "audio2.mp3".to_string()), Label::Input);
 
@@ -51,7 +52,9 @@ pub async fn run(options: Options) -> eyre::Result<()> {
 
     // copy to example dir so we can test
     if let Some(path) = output_path {
-        tokio::fs::copy(result.output().unwrap(), path).await?;
+        if let Some(output_path) = result.output() {
+            tokio::fs::copy(output_path, path).await?;
+        }
     }
 
     println!("completed in {:.2?}", start.elapsed());
