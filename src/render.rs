@@ -1,8 +1,20 @@
+//! Rendering helpers.
+//!
+//! Rendering is behind the `render` feature.
+//!
+//! When enabled, `taski` can:
+//! - render schedules as SVG graphs (`Schedule::render*`)
+//! - render execution traces as SVG timelines (`Trace::render*`)
+//!
+//! On docs.rs, these APIs are annotated with `doc(cfg(feature = "render"))`.
+
+/// RGBA color used by the `render` feature.
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
 pub struct Rgba(pub u8, pub u8, pub u8, pub f64);
 
 #[cfg(feature = "render")]
 impl Rgba {
+    /// Converts a hue to an [`Rgba`] color.
     #[must_use]
     pub fn from_hue(hue: palette::RgbHue) -> Self {
         hue_to_rgb(hue).into()
@@ -60,6 +72,7 @@ fn calculate_hash<T: std::hash::Hash>(t: T) -> u64 {
 
 /// Compute a color based on the hash of the given ID.
 #[cfg(feature = "render")]
+#[cfg_attr(docsrs, doc(cfg(feature = "render")))]
 pub fn color_from_id<I: std::hash::Hash>(id: I) -> Rgba {
     use rand::{Rng, SeedableRng};
     let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(calculate_hash(id));
@@ -68,16 +81,21 @@ pub fn color_from_id<I: std::hash::Hash>(id: I) -> Rgba {
 }
 
 #[cfg(feature = "render")]
+#[cfg_attr(docsrs, doc(cfg(feature = "render")))]
 pub mod trace {
     use plotters::prelude::*;
     use std::time::Duration;
 
     #[derive(thiserror::Error, Debug)]
+    /// Errors that can occur when rendering a trace.
     pub enum Error {
+        /// The trace is too large to render within fixed limits.
         #[error("the trace is too large to be rendered")]
         TooLarge,
+        /// Rendering failed due to an error reported by the backend.
         #[error("failed to render trace: {0}")]
         Render(String),
+        /// Writing the output failed.
         #[error(transparent)]
         Io(#[from] std::io::Error),
     }
@@ -230,7 +248,12 @@ pub mod trace {
 }
 
 #[cfg(feature = "render")]
+#[cfg_attr(docsrs, doc(cfg(feature = "render")))]
 pub mod schedule {
+    //! Schedule rendering.
+    //!
+    //! These methods are only available with the `render` feature enabled.
+
     use crate::{
         schedule::{Schedulable, Schedule},
         task,
@@ -245,6 +268,23 @@ pub mod schedule {
     use petgraph as pg;
     use std::collections::HashMap;
     use std::sync::Arc;
+
+    fn node<'a, LL: 'a>(node: &task::Ref<'a, LL>) -> shapes::Element {
+        let node_style = style::StyleAttr {
+            line_color: Color::new(0x0000_00FF),
+            line_width: 2,
+            fill_color: node.color().map(Into::into),
+            rounded: 0,
+            font_size: 15,
+        };
+        let size = core::geometry::Point { x: 100.0, y: 100.0 };
+        shapes::Element::create(
+            shapes::ShapeKind::Circle(format!("{node}")),
+            node_style,
+            Orientation::TopToBottom,
+            size,
+        )
+    }
 
     impl<'id, L: 'id> Schedule<'id, L> {
         /// Render the task graph as an svg image.
@@ -277,21 +317,8 @@ pub mod schedule {
         /// Render the task graph as an svg image.
         #[must_use]
         pub fn render(&self) -> String {
-            fn node<'a, LL: 'a>(node: &task::Ref<'a, LL>) -> shapes::Element {
-                let node_style = style::StyleAttr {
-                    line_color: Color::new(0x0000_00FF),
-                    line_width: 2,
-                    fill_color: node.color().map(Into::into),
-                    rounded: 0,
-                    font_size: 15,
-                };
-                let size = core::geometry::Point { x: 100.0, y: 100.0 };
-                shapes::Element::create(
-                    shapes::ShapeKind::Circle(format!("{node}")),
-                    node_style,
-                    Orientation::TopToBottom,
-                    size,
-                )
+            if self.dag.node_count() == 0 {
+                return "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".to_string();
             }
 
             let mut graph = VisualGraph::new(Orientation::TopToBottom);

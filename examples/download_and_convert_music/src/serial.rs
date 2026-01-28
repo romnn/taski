@@ -15,7 +15,7 @@ async fn trace_task<T, I, O>(
 where
     T: taski::task::Task<I, O>,
 {
-    let label = task.name().to_string();
+    let label = task.name().clone();
     let color = task.color();
     let start = Instant::now();
     let result = taski::task::Task::run(task, args)

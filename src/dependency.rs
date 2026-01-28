@@ -1,7 +1,26 @@
+//! Dependency extraction for task inputs.
+//!
+//! When you add a task to a [`crate::Schedule`], you specify its dependencies. A dependency value
+//! must implement [`Dependencies`]. The executor uses it to:
+//! - enumerate prerequisite tasks (`task_ids`)
+//! - construct a typed input value from an [`Execution`] (`inputs`)
+//!
+//! The crate provides [`Dependencies`] implementations for tuples of [`dag::Handle`] up to arity 8
+//! (matching the `TaskN` / `ClosureN` families).
+
 use crate::{dag, execution::Execution};
 
+/// Typed dependencies for a task.
+///
+/// Most users use the built-in tuple implementations, e.g. `(a, b)` where `a` and `b` are
+/// [`dag::Handle`] values.
 pub trait Dependencies<'id, O> {
+    /// Returns the task ids of all prerequisite tasks.
     fn task_ids(&self) -> Vec<dag::TaskId<'id>>;
+
+    /// Attempts to construct the input value for the dependant task.
+    ///
+    /// Returns `None` if any dependency output is not available.
     fn inputs(&self, execution: &Execution<'id>) -> Option<O>;
 }
 
@@ -280,8 +299,8 @@ where
     }
 }
 
-impl<'id, O> std::fmt::Debug for dyn Dependencies<'id, O> + '_ {
+impl<O> std::fmt::Debug for dyn Dependencies<'_, O> + '_ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.task_ids())
+        f.debug_struct("Dependencies").finish_non_exhaustive()
     }
 }

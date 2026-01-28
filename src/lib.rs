@@ -1,4 +1,45 @@
 #![allow(clippy::missing_panics_doc)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
+//! Async task DAG execution.
+//!
+//! `taski` lets you build a directed acyclic graph (DAG) of tasks and then execute it with a
+//! scheduling policy.
+//!
+//! ## Quickstart
+//!
+//! Build a schedule, run it, then read outputs through typed handles:
+//!
+//! ```
+//! use taski::{make_guard, PolicyExecutor, Schedule, TaskResult};
+//! use futures::executor;
+//!
+//! async fn add_one(v: i32) -> TaskResult<i32> {
+//!     Ok(v + 1)
+//! }
+//!
+//! fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+//!     executor::block_on(async {
+//!         make_guard!(guard);
+//!         let mut schedule: Schedule<'_, ()> = Schedule::new(guard);
+//!
+//!         let input = schedule.add_input(1_i32, ());
+//!         let output = schedule.add_closure(add_one, (input,), ())?;
+//!
+//!         let mut executor = PolicyExecutor::fifo(schedule);
+//!         executor.run().await?;
+//!
+//!         assert_eq!(executor.execution().output_ref(output).copied(), Some(2));
+//!         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+//!     })?;
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ## Features
+//!
+//! - `render`: enables SVG rendering of schedules and execution traces.
 
 pub mod dag;
 pub mod dependency;
@@ -175,6 +216,7 @@ mod tests {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn custom_scheduler() -> eyre::Result<()> {
         use std::collections::HashMap;

@@ -1,15 +1,29 @@
+//! Execution state for a running schedule.
+//!
+//! [`Execution`] tracks per-task state, timings, outputs, and errors while a schedule is being
+//! executed by a [`crate::PolicyExecutor`].
+//!
+//! Access to task outputs is type-safe via [`dag::Handle`]. Internally, outputs are stored as
+//! `Arc<dyn Any + Send + Sync>` and downcast on demand.
+
 use crate::{dag, task};
 
 use std::any::Any;
 use std::sync::Arc;
 use std::time::Instant;
 
+/// Per-task execution data.
 #[derive(Debug)]
 pub struct TaskExecution {
+    /// Current task state.
     pub state: task::State,
+    /// When the task started running (if ever).
     pub started_at: Option<Instant>,
+    /// When the task completed (if ever).
     pub completed_at: Option<Instant>,
+    /// Output produced by a successful task.
     pub output: Option<Arc<dyn Any + Send + Sync>>,
+    /// Error produced by a failed task.
     pub error: Option<task::Error>,
 }
 
@@ -26,6 +40,12 @@ impl Default for TaskExecution {
 }
 
 #[derive(Debug, Default)]
+/// Execution state for a branded schedule.
+///
+/// An `Execution` is created by a [`crate::PolicyExecutor`] and updated as tasks transition through
+/// [`task::State`]s.
+///
+/// The `'id` lifetime ensures that task ids/handles belong to the same schedule.
 pub struct Execution<'id> {
     schedule_id: u64,
     tasks: Vec<TaskExecution>,
@@ -125,24 +145,28 @@ impl<'id> Execution<'id> {
     }
 
     #[must_use]
+    /// Returns the number of tasks currently in the `Running` state.
     pub fn running_count(&self) -> usize {
         self.running_count
     }
 
     #[must_use]
+    /// Returns the number of tasks that have not yet completed.
     pub fn unfinished_count(&self) -> usize {
         self.unfinished_count
     }
 
+    /// Returns the current [`task::State`] of the given task.
+    ///
+    /// If the task id does not belong to this execution, `Pending` is returned.
     #[must_use]
     pub fn state(&self, task_id: dag::TaskId<'id>) -> task::State {
-        if !self.validate_task_id(task_id) {
+        if task_id.schedule_id() != self.schedule_id {
             return task::State::Pending;
         }
         self.tasks
             .get(task_id.idx().index())
-            .map(|t| t.state.clone())
-            .unwrap_or(task::State::Pending)
+            .map_or(task::State::Pending, |t| t.state.clone())
     }
 
     #[must_use]
@@ -156,10 +180,14 @@ impl<'id> Execution<'id> {
     }
 
     #[must_use]
+    /// Returns a typed reference to a task output.
+    ///
+    /// Returns `None` if the task has not completed successfully or if the type does not match.
     pub fn output_ref<O: 'static>(&self, handle: dag::Handle<'id, O>) -> Option<&O> {
         self.output_ref_task_id::<O>(handle.task_id())
     }
 
+    /// Returns the time the task started, if known.
     #[must_use]
     pub fn started_at(&self, task_id: dag::TaskId<'id>) -> Option<Instant> {
         if !self.validate_task_id(task_id) {
@@ -168,6 +196,7 @@ impl<'id> Execution<'id> {
         self.tasks.get(task_id.idx().index())?.started_at
     }
 
+    /// Returns the time the task completed, if known.
     #[must_use]
     pub fn completed_at(&self, task_id: dag::TaskId<'id>) -> Option<Instant> {
         if !self.validate_task_id(task_id) {

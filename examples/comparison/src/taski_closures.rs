@@ -35,7 +35,7 @@ pub async fn run() -> eyre::Result<Option<i32>> {
     // optional: render the DAG graph and an execution trace.
     super::render(&executor, "closures")?;
 
-    Ok(executor.execution().output_ref(_7).cloned())
+    Ok(executor.execution().output_ref(_7).copied())
 }
 
 #[cfg(test)]

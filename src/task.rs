@@ -1,3 +1,13 @@
+//! Tasks and async closures.
+//!
+//! `taski` supports two ways of defining work nodes:
+//!
+//! - Implement one of the `TaskN` traits (recommended for reusable tasks).
+//! - Pass an async closure to [`crate::Schedule::add_closure`] (convenient for small pipelines).
+//!
+//! Both styles ultimately produce a task that returns a [`Result`]. Returning an error will fail
+//! the task and (by default) fail dependants.
+
 use crate::{
     dag,
     dependency::Dependencies,
@@ -32,11 +42,19 @@ fn summarize(s: &dyn std::fmt::Debug, max_length: usize) -> String {
     format!("{head}...{tail}")
 }
 
+/// A type-erased reference to a schedulable task node.
+///
+/// This is primarily used internally to store heterogeneous tasks in a single schedule DAG.
 pub type Ref<'id, L> = Arc<dyn Schedulable<'id, L> + 'id>;
 
+/// Task error wrapper.
+///
+/// `taski` stores task failures as boxed trait objects so tasks can return arbitrary error types.
+/// Most users interact with errors via [`Result`].
 pub struct Error(pub Box<dyn std::error::Error + Send + Sync + 'static>);
 
 impl Error {
+    /// Wraps an error value.
     pub fn new<E>(error: E) -> Self
     where
         E: std::error::Error + Send + Sync + 'static,
@@ -79,11 +97,21 @@ impl From<Box<dyn std::error::Error + Send + Sync + 'static>> for Error {
     }
 }
 
+/// Task result type used by `taski`.
+///
+/// Returning `Err(_)` fails the task.
 pub type Result<O> = std::result::Result<O, Box<dyn std::error::Error + Send + Sync + 'static>>;
 
+/// Boxed future returned by closure-based tasks.
 pub type Fut<O> = Pin<Box<dyn Future<Output = Result<O>> + Send>>;
 
+/// Internal abstraction for async closures used with [`crate::Schedule::add_closure`].
+///
+/// Users typically do not implement this trait manually. Instead, `taski` provides blanket
+/// implementations via the `ClosureN` traits (`Closure1`..`Closure8`), allowing async closures of
+/// arity 1..8 to be used as schedule nodes.
 pub trait Closure<I, O> {
+    /// Runs the closure, consuming it.
     fn run(self: Box<Self>, inputs: I) -> Fut<O>;
 }
 
@@ -151,13 +179,13 @@ impl<I, O> InternalState<I, O> {
 /// The state of a task.
 #[derive(Debug, Clone)]
 pub enum State {
-    /// Task is pending
+    /// Task is pending.
     Pending,
-    /// Task is running
+    /// Task is running.
     Running,
-    /// Task succeeded
+    /// Task succeeded.
     Succeeded,
-    /// Task failed with an error
+    /// Task failed with an error.
     Failed,
 }
 
@@ -188,6 +216,9 @@ impl State {
 }
 
 #[async_trait::async_trait]
+/// Base task trait used by the executor.
+///
+/// Most users implement one of the `TaskN` traits instead of implementing this directly.
 pub trait Task<I, O> {
     /// Runs the task.
     ///
@@ -203,6 +234,7 @@ pub trait Task<I, O> {
     }
 
     /// The color of the task when rendered.
+    #[cfg_attr(docsrs, doc(cfg(feature = "render")))]
     fn color(&self) -> Option<crate::render::Rgba> {
         None
     }
@@ -285,19 +317,45 @@ impl<I, O> NodeInner<I, O> {
     }
 }
 
+/// A task node stored in a schedule DAG.
+///
+/// This type is primarily used internally by [`crate::Schedule`] to store tasks (both
+/// task-trait-based and closure-based) in a heterogeneous graph.
+///
+/// Most users should not need to construct `Node` values directly; use
+/// [`crate::Schedule::add_node`] and [`crate::Schedule::add_closure`] instead.
 pub struct Node<'id, I, O, L> {
+    /// Display name of the task.
+    ///
+    /// For task-based nodes this is derived from [`Task::name`]. For closure-based nodes this
+    /// defaults to `"<unnamed>"`.
     pub task_name: String,
+
+    /// Optional color used for rendering.
+    ///
+    /// When the `render` feature is enabled, a default color may be derived from the task id.
     pub color: Option<crate::render::Rgba>,
+
+    /// User-provided label used by scheduling policies.
     pub label: L,
+
+    /// When this node was created.
     pub created_at: Instant,
+
+    /// The ids of dependency tasks.
     pub dependency_task_ids: Vec<dag::TaskId<'id>>,
+
+    /// Typed dependency extractor used to build input values at runtime.
     pub dependencies: Box<dyn Dependencies<'id, I> + Send + Sync + 'id>,
+
+    /// The branded id of this node.
     pub index: dag::TaskId<'id>,
 
     pub(crate) inner: Arc<Mutex<NodeInner<I, O>>>,
 }
 
 impl<'id, I, O, L> Node<'id, I, O, L> {
+    /// Creates a task-based node.
     pub fn new<T, D>(
         task: T,
         deps: D,
@@ -324,6 +382,7 @@ impl<'id, I, O, L> Node<'id, I, O, L> {
         }
     }
 
+    /// Creates a closure-based node.
     pub fn closure<C, D>(
         closure: Box<C>,
         deps: D,
@@ -417,9 +476,7 @@ where
 
     fn run(&self, execution: &Execution<'id>) -> Option<crate::schedule::Fut<'id>> {
         // get the inputs from the dependencies
-        let Some(inputs) = self.dependencies.inputs(execution) else {
-            return None;
-        };
+        let inputs = self.dependencies.inputs(execution)?;
 
         let task = self.inner.lock().task.take()?;
 
@@ -542,7 +599,11 @@ task!(Task8: T1, T2, T3, T4, T5, T6, T7, T8);
 
 #[async_trait::async_trait]
 #[allow(clippy::module_name_repetitions)]
+/// Task with zero inputs.
+///
+/// This is useful for source nodes and constant producers.
 pub trait Task0<O>: std::fmt::Debug {
+    /// Runs the task.
     async fn run(self: Box<Self>) -> Result<O>;
 
     fn name(&self) -> String {
@@ -575,6 +636,12 @@ where
 // TODO: add documentation
 macro_rules! closure {
     ($name:ident: $( $type:ident ),*) => {
+        #[doc = concat!(
+"An async closure with input(s) `", stringify!($( $type ),*), "` and output `O`.
+
+This trait is implemented automatically for `async` closures of the corresponding arity, allowing
+them to be passed to [`crate::Schedule::add_closure`].
+")]
         #[allow(
             non_snake_case,
             clippy::too_many_arguments,
@@ -582,6 +649,11 @@ macro_rules! closure {
         )]
         #[async_trait::async_trait]
         pub trait $name<$( $type ),*, O> {
+            #[doc = concat!(
+"Runs the closure with inputs: `", stringify!($( $type ),*), "` and output `O`.
+
+The returned future must resolve to [`crate::task::Result<O>`].
+")]
             fn run(self: Box<Self>, $($type: $type),*) -> Fut<O>;
         }
 

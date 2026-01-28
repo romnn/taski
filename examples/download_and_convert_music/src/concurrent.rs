@@ -51,10 +51,10 @@ pub async fn run(options: Options) -> eyre::Result<()> {
     }
 
     // copy to example dir so we can test
-    if let Some(path) = output_path {
-        if let Some(output_path) = executor.execution().output_ref(result).cloned() {
-            tokio::fs::copy(output_path, path).await?;
-        }
+    if let Some(path) = output_path
+        && let Some(output_path) = executor.execution().output_ref(result).cloned()
+    {
+        tokio::fs::copy(output_path, path).await?;
     }
 
     println!("completed in {:.2?}", start.elapsed());

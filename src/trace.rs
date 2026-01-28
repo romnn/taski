@@ -1,12 +1,22 @@
+//! Execution tracing.
+//!
+//! A [`Trace`] records timing information for tasks executed by a [`crate::PolicyExecutor`].
+//!
+//! When the `render` feature is enabled, traces can also be rendered as SVG.
+
 use std::time::{Duration, Instant};
 
 /// A traced task.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Task {
+    /// Human-readable label used for debugging and rendering.
     pub label: String,
     #[cfg(feature = "render")]
+    /// Optional color used by the `render` feature.
     pub color: Option<crate::render::Rgba>,
+    /// Start time.
     pub start: Instant,
+    /// End time.
     pub end: Instant,
 }
 
@@ -21,7 +31,9 @@ impl Task {
 /// An execution trace of tasks.
 #[derive(Debug)]
 pub struct Trace<T> {
+    /// Wall-clock start time of the trace.
     pub start_time: Instant,
+    /// Completed tasks and their traced timing information.
     pub tasks: Vec<(T, Task)>,
 }
 
@@ -36,6 +48,11 @@ where
 }
 
 pub mod iter {
+    //! Trace iterators.
+    //!
+    //! The main iterator is [`ConcurrentIter`], which yields the set of tasks that were running at
+    //! each event boundary (task start/end).
+
     use std::collections::HashSet;
     use std::time::Instant;
 
@@ -45,6 +62,7 @@ pub mod iter {
     }
 
     impl Event {
+        /// Returns the timestamp associated with this event.
         pub fn time(&self) -> &Instant {
             match self {
                 Self::Start(t) | Self::End(t) => t,
@@ -60,6 +78,7 @@ pub mod iter {
     }
 
     impl<'a, T> ConcurrentIter<'a, T> {
+        /// Creates a new iterator over concurrency sets for the given trace tasks.
         pub fn new(tasks: &'a [(T, super::Task)]) -> Self {
             let mut events: Vec<_> = tasks
                 .iter()
@@ -100,6 +119,7 @@ pub mod iter {
 impl<T> Trace<T> {
     #[must_use]
     #[inline]
+    /// Creates an empty trace.
     pub fn new() -> Self {
         Self {
             start_time: Instant::now(),

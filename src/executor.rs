@@ -1,27 +1,51 @@
+//! Schedule execution.
+//!
+//! The main entry point is [`PolicyExecutor`], which runs a [`crate::Schedule`] using a
+//! user-provided [`crate::policy::Policy`] (or one of the built-in policies in [`crate::policy`]).
+//!
+//! Execution is asynchronous: tasks are polled concurrently up to the configured concurrency
+//! limit, and dependants are scheduled once their prerequisites have completed successfully.
+
 use crate::{dag, execution::Execution, policy, schedule, schedule::Schedule, task, trace};
 
 use std::pin::Pin;
 
-/// A report of the execution of a task schedule
+/// A report of a schedule execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunReport {
+    /// Total number of tasks in the schedule.
     pub total_tasks: usize,
+
+    /// Number of tasks that completed successfully.
     pub succeeded_tasks: usize,
+
+    /// Number of tasks that failed (including dependants failed due to dependency failure).
     pub failed_tasks: usize,
 }
 
-/// An error that can occur when running a task schedule
+/// An error that can occur when running a schedule.
 #[derive(thiserror::Error, Debug)]
 pub enum RunError {
-    /// The execution stalled with unfinished tasks
+    /// The execution stalled with unfinished tasks.
+    ///
+    /// This happens if there are still pending tasks, but the policy produces no runnable task
+    /// ids and there are no running futures.
     #[error("execution stalled with {unfinished_tasks} unfinished tasks")]
     Stalled {
+        /// Number of tasks that have not yet finished.
         unfinished_tasks: usize,
+
+        /// Node indices that are still pending.
         pending_task_indices: Vec<usize>,
     },
 }
 
-/// An executor for a task schedule
+/// Executes a [`Schedule`] using a scheduling policy.
+///
+/// Construct an executor using one of the convenience constructors:
+/// - [`PolicyExecutor::fifo`]
+/// - [`PolicyExecutor::priority`]
+/// - [`PolicyExecutor::custom`]
 #[derive(Debug)]
 #[allow(clippy::module_name_repetitions)]
 pub struct PolicyExecutor<'id, P, L> {
@@ -50,25 +74,32 @@ where
         }
     }
 
+    /// Returns the underlying schedule.
     #[must_use]
     pub fn schedule(&self) -> &Schedule<'id, L> {
         &self.schedule
     }
 
+    /// Returns the current execution state.
     #[must_use]
     pub fn execution(&self) -> &Execution<'id> {
         &self.execution
     }
 
+    /// Returns a mutable reference to the execution state.
+    ///
+    /// This is mainly useful for advanced introspection and testing.
     pub fn execution_mut(&mut self) -> &mut Execution<'id> {
         &mut self.execution
     }
 
+    /// Returns the execution trace collected during the run.
     #[must_use]
     pub fn trace(&self) -> &trace::Trace<dag::TaskId<'id>> {
         &self.trace
     }
 
+    /// Returns a mutable reference to the execution trace.
     pub fn trace_mut(&mut self) -> &mut trace::Trace<dag::TaskId<'id>> {
         &mut self.trace
     }
@@ -92,6 +123,7 @@ where
         }
     }
 
+    /// Sets a maximum number of concurrently running tasks.
     #[must_use]
     pub fn max_concurrent(mut self, limit: Option<usize>) -> Self {
         self.policy.max_concurrent = limit;
@@ -119,6 +151,7 @@ where
         }
     }
 
+    /// Sets a maximum number of concurrently running tasks.
     #[must_use]
     pub fn max_concurrent(mut self, limit: Option<usize>) -> Self {
         self.policy.max_concurrent = limit;
@@ -131,26 +164,26 @@ where
     P: policy::Policy<'id, L>,
     L: 'static,
 {
-    /// Runs the tasks in the graph
+    /// Runs the tasks in the graph.
+    ///
+    /// # Errors
+    /// - If the executor stalls (no runnable tasks and no running futures).
+    /// - If a task panics.
+    #[allow(clippy::too_many_lines)]
     pub async fn run(&mut self) -> Result<RunReport, RunError> {
         use futures::stream::{FuturesUnordered, StreamExt};
         use std::future::Future;
         use std::time::Instant;
 
-        let mut running_tasks: FuturesUnordered<
-            Pin<
-                Box<
-                    dyn Future<
-                            Output = (
-                                dag::TaskId<'id>,
-                                trace::Task,
-                                Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, task::Error>,
-                            ),
-                        > + Send
-                        + 'id,
-                >,
-            >,
-        > = FuturesUnordered::new();
+        type TaskOutput<'id> = (
+            dag::TaskId<'id>,
+            trace::Task,
+            Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, task::Error>,
+        );
+
+        type TaskOutputFut<'id> = Pin<Box<dyn Future<Output = TaskOutput<'id>> + Send + 'id>>;
+
+        let mut running_tasks: FuturesUnordered<TaskOutputFut<'id>> = FuturesUnordered::new();
 
         let node_count = self.schedule.dag.node_count();
         let mut succeeded_tasks = 0usize;
@@ -194,8 +227,11 @@ where
                     let failed = self.schedule.fail_dependants(&mut self.execution, task_id);
                     for failed_task_id in failed {
                         failed_tasks = failed_tasks.saturating_add(1);
-                        self.policy
-                            .on_task_finished(failed_task_id, task::State::Failed, &self.schedule);
+                        self.policy.on_task_finished(
+                            failed_task_id,
+                            task::State::Failed,
+                            &self.schedule,
+                        );
                     }
                 }
             }
@@ -241,14 +277,18 @@ where
                 }
             };
 
-            self.policy.on_task_finished(task_id, state.clone(), &self.schedule);
+            self.policy
+                .on_task_finished(task_id, state.clone(), &self.schedule);
 
             if state.did_fail() {
                 let failed = self.schedule.fail_dependants(&mut self.execution, task_id);
                 for failed_task_id in failed {
                     failed_tasks = failed_tasks.saturating_add(1);
-                    self.policy
-                        .on_task_finished(failed_task_id, task::State::Failed, &self.schedule);
+                    self.policy.on_task_finished(
+                        failed_task_id,
+                        task::State::Failed,
+                        &self.schedule,
+                    );
                 }
             }
 

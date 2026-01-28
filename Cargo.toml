@@ -15,7 +15,7 @@ unreachable      = "deny"
 unimplemented    = "deny"
 todo             = "deny"
 indexing_slicing = "deny"
-missing_errors_doc = "allow"
+missing_errors_doc = "warn"
 
 [workspace.package]
 edition = "2024"
@@ -57,7 +57,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 rustc-args = ["--cfg", "docsrs"]
 
 [package.metadata.cargo-feature-combinations]
-denylist = ["default"]
+exclude_features = ["default"]
 
 [dependencies]
 thiserror = "2"

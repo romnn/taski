@@ -6,7 +6,7 @@ use taski::{PolicyExecutor, Schedule, TaskResult};
 #[derive(Debug)]
 struct SumTwoNumbers {}
 
-/// Implement Task2 for SumTwoNumbers.
+/// Implement Task2 for `SumTwoNumbers`.
 ///
 /// The first two generic arguments are the two arguments.
 /// The last generic argument is the output type.
@@ -37,7 +37,7 @@ pub async fn run() -> eyre::Result<Option<i32>> {
     // optional: render the DAG graph and an execution trace.
     super::render(&executor, "tasks")?;
 
-    Ok(executor.execution().output_ref(_7).cloned())
+    Ok(executor.execution().output_ref(_7).copied())
 }
 
 #[cfg(test)]

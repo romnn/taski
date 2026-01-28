@@ -1,3 +1,11 @@
+//! Schedule construction.
+//!
+//! A [`Schedule`] is a directed acyclic graph (DAG) of tasks. You add tasks via [`Schedule::add_node`]
+//! or [`Schedule::add_closure`] and connect them by passing typed dependency handles.
+//!
+//! Schedules are *branded* by a `generativity` guard (`'id`), which prevents mixing handles from
+//! different schedules.
+
 use petgraph as pg;
 
 use crate::{
@@ -24,6 +32,7 @@ static NEXT_SCHEDULE_ID: AtomicU64 = AtomicU64::new(1);
 /// This covers preconditions that cause tasks to fail during scheduling.
 #[derive(thiserror::Error, Debug, Clone, PartialEq)]
 pub enum Error {
+    /// A dependency failed, so the task could not be run.
     #[error("task dependency failed")]
     FailedDependency,
 }
@@ -31,9 +40,11 @@ pub enum Error {
 /// A schedule construction error.
 #[derive(thiserror::Error, Debug, Clone, PartialEq)]
 pub enum BuildError {
+    /// A dependency belongs to a different schedule.
     #[error("dependency belongs to a different schedule")]
     DifferentScheduleDependency,
 
+    /// A dependency handle does not refer to a node contained in this schedule.
     #[error("dependency is not contained in the schedule")]
     MissingDependency,
 }
@@ -54,10 +65,10 @@ pub(crate) type Fut<'id> =
 
 /// Trait representing a schedulable task node.
 ///
-/// TaskNodes implement this trait.
-/// We cannot just use the TaskNode by itself,
-/// because we need to combine task nodes with different
-/// generic parameters.
+/// Task nodes implement this trait.
+///
+/// This is an internal abstraction used by the executor and policies. It exists because the
+/// schedule must store heterogeneous tasks (different input/output types) in a single graph.
 pub trait Schedulable<'id, L: 'id>: Send + Sync + 'id {
     /// Indicates if the schedulable task has succeeded.
     ///
@@ -141,7 +152,7 @@ pub trait Schedulable<'id, L: 'id>: Send + Sync + 'id {
                 .all(|&task_id| execution.state(task_id).did_succeed())
     }
 
-    /// The running_time time of the task.
+    /// The `running_time` time of the task.
     ///
     /// If the task has not yet completed, `None` is returned.
     fn running_time(&self, execution: &Execution<'id>) -> Option<Duration> {
@@ -190,14 +201,49 @@ impl<'id, L: 'id> PartialEq for dyn Schedulable<'id, L> + '_ {
 impl<'id, L: 'id> Eq for dyn Schedulable<'id, L> + '_ {}
 
 /// A task schedule based on a DAG of task nodes.
+///
+/// The label type `L` is provided by the caller and can be used by policies (e.g. priority
+/// scheduling). If you do not need labels, use `()`.
+///
+/// # Example
+///
+/// ```
+/// use futures::executor;
+/// use taski::{make_guard, PolicyExecutor, Schedule, TaskResult};
+///
+/// async fn add(lhs: i32, rhs: i32) -> TaskResult<i32> {
+///     Ok(lhs + rhs)
+/// }
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+///     executor::block_on(async {
+///         make_guard!(guard);
+///         let mut schedule: Schedule<'_, ()> = Schedule::new(guard);
+///
+///         let one = schedule.add_input(1_i32, ());
+///         let two = schedule.add_input(2_i32, ());
+///         let three = schedule.add_closure(add, (one, two), ())?;
+///
+///         let mut executor = PolicyExecutor::fifo(schedule);
+///         executor.run().await?;
+///
+///         assert_eq!(executor.execution().output_ref(three).copied(), Some(3));
+///         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+///     })
+/// }
+/// ```
 #[derive(Debug)]
 pub struct Schedule<'id, L: 'id> {
     _guard: generativity::Id<'id>,
+    #[allow(clippy::struct_field_names)]
     schedule_id: u64,
     pub(crate) dag: DAG<task::Ref<'id, L>>,
 }
 
 impl<'id, L: 'id> Schedule<'id, L> {
+    /// Creates an empty schedule branded by the given guard.
+    ///
+    /// The guard brands all handles created from this schedule, preventing cross-schedule mixing.
     #[must_use]
     pub fn new(guard: Guard<'id>) -> Self {
         Self {
@@ -225,6 +271,10 @@ impl<'id, L: 'id> Schedule<'id, L> {
     /// Dependencies for the task must be references to tasks that
     /// have already been added to the schedule and match the arguments
     /// of the added task.
+    ///
+    /// # Errors
+    /// - If a dependency belongs to a different schedule.
+    /// - If a dependency is not contained in the schedule.
     pub fn add_node<I, O, T, D>(
         &mut self,
         task: T,
@@ -240,7 +290,7 @@ impl<'id, L: 'id> Schedule<'id, L> {
     {
         let index = dag::TaskId::new(self.schedule_id, dag::Idx::new(self.dag.node_count()));
         let dependency_task_ids = deps.task_ids();
-        for &dep_task_id in dependency_task_ids.iter() {
+        for &dep_task_id in &dependency_task_ids {
             if dep_task_id.schedule_id() != self.schedule_id {
                 return Err(BuildError::DifferentScheduleDependency);
             }
@@ -276,6 +326,10 @@ impl<'id, L: 'id> Schedule<'id, L> {
     /// Dependencies for the task must be references to tasks that
     /// have already been added to the schedule and match the arguments
     /// of the added task.
+    ///
+    /// # Errors
+    /// - If a dependency belongs to a different schedule.
+    /// - If a dependency is not contained in the schedule.
     pub fn add_closure<C, I, O, D>(
         &mut self,
         closure: C,
@@ -292,7 +346,7 @@ impl<'id, L: 'id> Schedule<'id, L> {
         let index = dag::TaskId::new(self.schedule_id, dag::Idx::new(self.dag.node_count()));
         let closure = Box::new(closure);
         let dependency_task_ids = deps.task_ids();
-        for &dep_task_id in dependency_task_ids.iter() {
+        for &dep_task_id in &dependency_task_ids {
             if dep_task_id.schedule_id() != self.schedule_id {
                 return Err(BuildError::DifferentScheduleDependency);
             }
@@ -401,16 +455,21 @@ impl<'id, L: 'id> Schedule<'id, L> {
             .map(|idx| dag::TaskId::new(self.schedule_id, idx))
     }
 
+    /// Returns a reference to the task node.
+    ///
+    /// This is primarily useful for introspection (e.g. policies and diagnostics).
     #[must_use]
     pub fn task(&self, task_id: dag::TaskId<'id>) -> &task::Ref<'id, L> {
         &self.dag[task_id.idx()]
     }
 
+    /// Returns the label associated with the given task.
     #[must_use]
     pub fn task_label(&self, task_id: dag::TaskId<'id>) -> &L {
         self.task(task_id).label()
     }
 
+    /// Returns the state of a task in the given execution.
     #[must_use]
     pub fn task_state(&self, execution: &Execution<'id>, task_id: dag::TaskId<'id>) -> task::State {
         self.task(task_id).state(execution)

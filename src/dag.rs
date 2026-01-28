@@ -1,9 +1,25 @@
+//! Low-level DAG identifiers and helpers.
+//!
+//! Most users interact with these indirectly via [`crate::Schedule`]. In particular:
+//! - [`Handle`] is the typed handle you get back from `Schedule::add_*`.
+//! - [`TaskId`] is an opaque identifier used internally and by policies.
+//!
+//! The `'id` lifetime brands values to a single schedule via `generativity`, preventing
+//! accidental cross-schedule mixing.
+
 use petgraph as pg;
 use std::marker::PhantomData;
 
+/// A node index in the underlying graph implementation.
 pub type Idx = pg::graph::NodeIndex<usize>;
+
+/// The underlying DAG type used by this crate.
 pub type DAG<N> = pg::stable_graph::StableDiGraph<N, (), usize>;
 
+/// Opaque identifier for a task node within a specific schedule.
+///
+/// `TaskId` values are *schedule-branded*: a task id from one schedule cannot be used with
+/// another schedule/execution.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TaskId<'id> {
     schedule_id: u64,
@@ -11,21 +27,25 @@ pub struct TaskId<'id> {
     _invariant: PhantomData<fn(&'id ()) -> &'id ()>,
 }
 
+/// A typed handle to a task output.
+///
+/// Handles are created by [`crate::Schedule`] and can be used to declare dependencies and to read
+/// outputs from an [`crate::execution::Execution`].
 #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Handle<'id, O> {
     task_id: TaskId<'id>,
-    _output: PhantomData<fn() -> O>,
+    _output: PhantomData<O>,
 }
 
-impl<'id, O> Copy for Handle<'id, O> {}
+impl<O> Copy for Handle<'_, O> {}
 
-impl<'id, O> Clone for Handle<'id, O> {
+impl<O> Clone for Handle<'_, O> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'id> TaskId<'id> {
+impl TaskId<'_> {
     #[must_use]
     pub(crate) fn new(schedule_id: u64, idx: Idx) -> Self {
         Self {
@@ -41,6 +61,7 @@ impl<'id> TaskId<'id> {
     }
 
     #[must_use]
+    /// Returns the underlying node index.
     pub fn idx(self) -> Idx {
         self.idx
     }
@@ -56,10 +77,14 @@ impl<'id, O> Handle<'id, O> {
     }
 
     #[must_use]
+    /// Returns the branded task id for this handle.
     pub fn task_id(self) -> TaskId<'id> {
         self.task_id
     }
 
+    /// Returns the underlying [`TaskId`].
+    ///
+    /// This is mainly useful for policies and diagnostics.
     #[must_use]
     pub fn task_id_ref(&self) -> TaskId<'id> {
         self.task_id
@@ -74,13 +99,13 @@ impl<'id, O> Handle<'id, O> {
 /// It may not necessarily visit added nodes or edges.
 #[derive(Clone, Debug)]
 pub struct Dfs<N, VM, F> {
-    /// The stack of nodes to visit
+    /// The stack of nodes to visit.
     pub stack: Vec<(usize, N)>,
-    /// The map of discovered nodes
+    /// The map of discovered nodes.
     pub discovered: VM,
-    /// Maximum depth of the traversal
+    /// Maximum depth of the traversal.
     pub max_depth: Option<usize>,
-    /// Filter nodes to traverse
+    /// Filter nodes to traverse.
     pub filter: Option<F>,
 }
 
@@ -107,6 +132,7 @@ where
     }
 
     #[must_use]
+    /// Filters nodes to traverse.
     pub fn filter(mut self, filter: F) -> Self
     where
         F: Fn(&N) -> bool,
@@ -116,6 +142,7 @@ where
     }
 
     #[must_use]
+    /// Sets a maximum traversal depth.
     pub fn max_depth(mut self, depth: usize) -> Self {
         self.max_depth = Some(depth);
         self

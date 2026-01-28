@@ -22,9 +22,12 @@ pub fn should_render() -> bool {
         == "yes"
 }
 
-// Render the DAG graph and an execution trace.
-//
-// NOTE: this requires the "render" feature of taski.
+/// Render the DAG graph and an execution trace.
+///
+/// NOTE: this requires the "render" feature of taski.
+///
+/// # Errors
+/// - If writing the rendered svg files fails.
 pub fn render<P, L: 'static>(
     executor: &taski::PolicyExecutor<P, L>,
     suffix: &str,
