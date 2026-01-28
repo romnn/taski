@@ -2,6 +2,7 @@
 
 pub mod dag;
 pub mod dependency;
+pub mod execution;
 pub mod executor;
 pub mod policy;
 pub mod render;
@@ -9,11 +10,13 @@ pub mod schedule;
 pub mod task;
 pub mod trace;
 
-pub use crate::dependency::Dependency;
+pub use crate::dependency::Dependencies;
 pub use executor::PolicyExecutor;
 pub use generativity::make_guard;
 pub use policy::Policy;
 pub use schedule::Schedule;
+
+pub use dag::Handle;
 
 pub use task::{Closure1, Closure2, Closure3, Closure4, Closure5, Closure6, Closure7, Closure8};
 pub use task::{Error, Input as TaskInput, Ref as TaskRef, Result as TaskResult};
@@ -154,13 +157,13 @@ mod tests {
         let running_order: Vec<_> = executor.trace.tasks.iter().map(|(t, _)| *t).collect();
         let expected_order = [
             // high priority
-            n5_p4.index,
-            n6_p3.index,
-            n3_p2.index,
+            n5_p4.task_id(),
+            n6_p3.task_id(),
+            n3_p2.task_id(),
             // same priority is executed in reverse order of insertion
-            n4_p1.index,
-            n2_p1.index,
-            n1_p1.index,
+            n4_p1.task_id(),
+            n2_p1.task_id(),
+            n1_p1.task_id(),
         ];
 
         assert_eq!(running_order.as_slice(), &expected_order);
@@ -172,6 +175,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn custom_scheduler() -> eyre::Result<()> {
         use std::collections::HashMap;
+        use std::collections::VecDeque;
 
         #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
         enum Label {
@@ -182,31 +186,70 @@ mod tests {
         #[derive(Clone, Debug)]
         struct CustomPolicy {
             limits: HashMap<Label, usize>,
+            ready: VecDeque<dag::Idx>,
+            running_by_label: HashMap<Label, usize>,
         }
 
         impl<'id> Policy<'id, Label> for CustomPolicy {
-            fn arbitrate(
-                &self,
-                ready: &[dag::TaskId<'id>],
+            fn reset(&mut self) {
+                self.ready.clear();
+                self.running_by_label.clear();
+            }
+
+            fn on_task_ready(&mut self, task_id: dag::TaskId<'id>, _schedule: &schedule::Schedule<'id, Label>) {
+                self.ready.push_back(task_id.idx());
+            }
+
+            fn on_task_started(
+                &mut self,
+                task_id: dag::TaskId<'id>,
                 schedule: &schedule::Schedule<'id, Label>,
-            ) -> Option<dag::TaskId<'id>> {
-                let mut running_tasks: HashMap<Label, usize> = HashMap::new();
-                for idx in schedule.running() {
-                    let label = schedule.dag[idx.idx()].label();
-                    *running_tasks.entry(*label).or_insert(0) += 1;
-                }
+            ) {
+                let label = *schedule.task_label(task_id);
+                *self.running_by_label.entry(label).or_insert(0) += 1;
+            }
 
-                // dbg!(&running_tasks);
-
-                for idx in ready {
-                    let label = schedule.dag[idx.idx()].label();
-                    let running = running_tasks.get(label).unwrap_or(&0);
-                    match self.limits.get(label) {
-                        Some(limit) if running < limit => return Some(*idx),
-                        None => return Some(*idx),
-                        _ => {}
+            fn on_task_finished(
+                &mut self,
+                task_id: dag::TaskId<'id>,
+                _state: task::State,
+                schedule: &schedule::Schedule<'id, Label>,
+            ) {
+                let label = *schedule.task_label(task_id);
+                if let Some(running) = self.running_by_label.get_mut(&label) {
+                    *running = running.saturating_sub(1);
+                    if *running == 0 {
+                        self.running_by_label.remove(&label);
                     }
                 }
+            }
+
+            fn next_task(
+                &mut self,
+                schedule: &schedule::Schedule<'id, Label>,
+                execution: &execution::Execution<'id>,
+            ) -> Option<dag::TaskId<'id>> {
+                let attempts = self.ready.len();
+                for _ in 0..attempts {
+                    let Some(task_idx) = self.ready.pop_front() else {
+                        break;
+                    };
+                    let task_id = dag::TaskId::new(task_idx);
+                    if !execution.state(task_id).is_pending() {
+                        continue;
+                    }
+
+                    let label = *schedule.task_label(task_id);
+                    let running = self.running_by_label.get(&label).copied().unwrap_or(0);
+                    match self.limits.get(&label) {
+                        Some(limit) if running < *limit => return Some(task_id),
+                        None => return Some(task_id),
+                        _ => {
+                            self.ready.push_back(task_idx);
+                        }
+                    }
+                }
+
                 None
             }
         }
@@ -261,12 +304,12 @@ mod tests {
         let d6 = graph.add_node(download.clone(), (), Label::Download);
 
         let process = Process {};
-        let _p1 = graph.add_node(process.clone(), (d1.clone(),), Label::Process);
-        let _p2 = graph.add_node(process.clone(), (d2.clone(),), Label::Process);
-        let _p3 = graph.add_node(process.clone(), (d3.clone(),), Label::Process);
-        let _p4 = graph.add_node(process.clone(), (d4.clone(),), Label::Process);
-        let _p5 = graph.add_node(process.clone(), (d5.clone(),), Label::Process);
-        let _p6 = graph.add_node(process.clone(), (d6.clone(),), Label::Process);
+        let _p1 = graph.add_node(process.clone(), (d1,), Label::Process);
+        let _p2 = graph.add_node(process.clone(), (d2,), Label::Process);
+        let _p3 = graph.add_node(process.clone(), (d3,), Label::Process);
+        let _p4 = graph.add_node(process.clone(), (d4,), Label::Process);
+        let _p5 = graph.add_node(process.clone(), (d5,), Label::Process);
+        let _p6 = graph.add_node(process.clone(), (d6,), Label::Process);
 
         let mut executor = PolicyExecutor::custom(
             graph,
@@ -274,6 +317,8 @@ mod tests {
                 // max two concurrent downloads
                 // max three concurrent processes
                 limits: HashMap::from_iter([(Label::Download, 3), (Label::Process, 2)]),
+                ready: VecDeque::new(),
+                running_by_label: HashMap::new(),
             },
         );
         executor.run().await;
@@ -324,8 +369,8 @@ mod tests {
         let i0 = graph.add_input("Hello".to_string(), Label::Input);
 
         let n0 = graph.add_node(identity.clone(), (i0,), Label::Identity);
-        let n1 = graph.add_node(identity.clone(), (n0.clone(),), Label::Identity);
-        let n2 = graph.add_node(identity.clone(), (n0.clone(),), Label::Identity);
+        let n1 = graph.add_node(identity.clone(), (n0,), Label::Identity);
+        let n2 = graph.add_node(identity.clone(), (n0,), Label::Identity);
         let result_node = graph.add_node(combine.clone(), (n1, n2), Label::Combine);
 
         let mut executor = PolicyExecutor::fifo(graph);
@@ -338,7 +383,7 @@ mod tests {
         render!(&executor);
 
         // check that output value of the scheduler is correct
-        let output = result_node.output();
+        let output = executor.execution.output_ref(result_node).cloned();
         assert_eq!(output.as_deref(), Some("Hello Hello"));
 
         Ok(())

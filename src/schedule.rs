@@ -3,11 +3,13 @@ use petgraph as pg;
 use crate::{
     dag::{self, DAG},
     dependency::Dependencies,
+    execution::Execution,
     task, trace,
 };
 
 use futures::Future;
 use generativity::Guard;
+use std::any::Any;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
@@ -24,7 +26,18 @@ pub enum Error {
 }
 
 pub(crate) type Fut<'id> =
-    Pin<Box<dyn Future<Output = (dag::TaskId<'id>, trace::Task)> + Send + 'id>>;
+    Pin<
+        Box<
+            dyn Future<
+                    Output = (
+                        dag::TaskId<'id>,
+                        trace::Task,
+                        Result<Arc<dyn Any + Send + Sync>, task::Error>,
+                    ),
+                > + Send
+                + 'id,
+        >,
+    >;
 
 /// Trait representing a schedulable task node.
 ///
@@ -36,27 +49,27 @@ pub trait Schedulable<'id, L: 'id>: Send + Sync + 'id {
     /// Indicates if the schedulable task has succeeded.
     ///
     /// A task is succeeded if its output is available.
-    fn succeeded(&self) -> bool;
+    fn succeeded(&self, execution: &Execution<'id>) -> bool;
 
     /// Fails the schedulable task.
-    fn fail(&self, err: task::Error);
+    fn fail(&self, execution: &mut Execution<'id>, err: task::Error);
 
     /// The result state of the task after completion.
-    fn state(&self) -> task::State;
+    fn state(&self, execution: &Execution<'id>) -> task::State;
 
     /// The current task formatted as an argument.
     ///
     /// If the task succeeded, this is equivalent to its output.
-    fn as_argument(&self) -> String;
+    fn as_argument(&self, execution: &Execution<'id>) -> String;
 
     /// Signature of the task with the arguments.
     fn signature(&self) -> String {
-        let arguments: Vec<_> = self
+        let dependencies: Vec<_> = self
             .dependencies()
             .iter()
-            .map(|dep| dep.as_argument())
+            .map(|task_id| task_id.idx().index())
             .collect();
-        format!("{}({})", self.name(), arguments.join(", "))
+        format!("{}({dependencies:?})", self.name())
     }
 
     /// The creation time of the task.
@@ -65,13 +78,13 @@ pub trait Schedulable<'id, L: 'id>: Send + Sync + 'id {
     /// The starting time of the task.
     ///
     /// If the task is still pending, `None` is returned.
-    fn started_at(&self) -> Option<Instant>;
+    fn started_at(&self, execution: &Execution<'id>) -> Option<Instant>;
 
     /// The completion time of the task.
     ///
     /// If the task is still pending or running,
     /// `None` is returned.
-    fn completed_at(&self) -> Option<Instant>;
+    fn completed_at(&self, execution: &Execution<'id>) -> Option<Instant>;
 
     /// Unique index of the task node in the DAG graph
     fn index(&self) -> dag::TaskId<'id>;
@@ -90,7 +103,7 @@ pub trait Schedulable<'id, L: 'id>: Send + Sync + 'id {
     ///
     /// Users must not manually run the task before all
     /// dependencies have completed.
-    fn run(&self) -> Option<Fut<'id>>;
+    fn run(&self, execution: &Execution<'id>) -> Option<Fut<'id>>;
 
     /// Returns the name of the schedulable task
     fn name(&self) -> &str;
@@ -102,28 +115,35 @@ pub trait Schedulable<'id, L: 'id>: Send + Sync + 'id {
     fn color(&self) -> &Option<crate::render::Rgba>;
 
     /// Returns the dependencies of the schedulable task
-    fn dependencies(&self) -> Vec<Arc<dyn Schedulable<'id, L> + 'id>>;
+    fn dependencies(&self) -> &[dag::TaskId<'id>];
 
     /// Indicates if the schedulable task is ready for execution.
     ///
     /// A task is ready if all its dependencies succeeded.
-    fn is_ready(&self) -> bool {
-        self.state().is_pending() && self.dependencies().iter().all(|d| d.succeeded())
+    fn is_ready(&self, execution: &Execution<'id>) -> bool {
+        self.state(execution).is_pending()
+            && self
+                .dependencies()
+                .iter()
+                .all(|&task_id| execution.state(task_id).did_succeed())
     }
 
     /// The running_time time of the task.
     ///
     /// If the task has not yet completed, `None` is returned.
-    fn running_time(&self) -> Option<Duration> {
-        match (self.started_at(), self.completed_at()) {
+    fn running_time(&self, execution: &Execution<'id>) -> Option<Duration> {
+        match (
+            self.started_at(execution),
+            self.completed_at(execution),
+        ) {
             (Some(s), Some(e)) => Some(e.duration_since(s)),
             _ => None,
         }
     }
 
     /// The queue time of the task.
-    fn queue_time(&self) -> Duration {
-        match self.started_at() {
+    fn queue_time(&self, execution: &Execution<'id>) -> Duration {
+        match self.started_at(execution) {
             Some(s) => s.duration_since(self.created_at()),
             None => self.created_at().elapsed(),
         }
@@ -185,10 +205,10 @@ impl<'id, L: 'id> Schedule<'id, L> {
         task: T,
         deps: D,
         label: L,
-    ) -> Arc<task::Node<'id, I, O, L>>
+    ) -> dag::Handle<'id, O>
     where
         T: task::Task<I, O> + Send + Sync + 'static,
-        D: Dependencies<'id, I, L> + Send + Sync + 'id,
+        D: Dependencies<'id, I> + Send + Sync + 'id,
         I: std::fmt::Debug + Send + Sync + 'static,
         O: std::fmt::Debug + Send + Sync + 'static,
         L: std::fmt::Debug + Send + Sync + 'static,
@@ -199,11 +219,11 @@ impl<'id, L: 'id> Schedule<'id, L> {
         assert_eq!(node_index, index.idx());
 
         // add edges to dependencies
-        for dep in node.dependencies() {
-            self.dag.add_edge(dep.index().idx(), node_index, ());
+        for &dep_task_id in node.dependencies() {
+            self.dag.add_edge(dep_task_id.idx(), node_index, ());
         }
 
-        node
+        dag::Handle::new(index)
     }
 
     /// Add a async closure to the graph.
@@ -224,10 +244,10 @@ impl<'id, L: 'id> Schedule<'id, L> {
         closure: C,
         deps: D,
         label: L,
-    ) -> Arc<task::Node<'id, I, O, L>>
+    ) -> dag::Handle<'id, O>
     where
         C: task::Closure<I, O> + Send + Sync + 'static,
-        D: Dependencies<'id, I, L> + Send + Sync + 'id,
+        D: Dependencies<'id, I> + Send + Sync + 'id,
         I: std::fmt::Debug + Send + Sync + 'static,
         O: std::fmt::Debug + Send + Sync + 'static,
         L: std::fmt::Debug + Send + Sync + 'static,
@@ -237,17 +257,17 @@ impl<'id, L: 'id> Schedule<'id, L> {
         let node = Arc::new(task::Node::closure(closure, deps, label, index));
         let node_index = self.dag.add_node(node.clone());
         assert_eq!(node_index, index.idx());
-        for dep in node.dependencies() {
-            self.dag.add_edge(dep.index().idx(), node_index, ());
+        for &dep_task_id in node.dependencies() {
+            self.dag.add_edge(dep_task_id.idx(), node_index, ());
         }
-        node
+        dag::Handle::new(index)
     }
 
     /// Add an input value without any dependencies to be used by other tasks.
     ///
     /// A common `label` type may optionally be given to allow for custom
     /// scheduling policies.
-    pub fn add_input<O>(&mut self, input: O, label: L) -> Arc<task::Node<'id, (), O, L>>
+    pub fn add_input<O>(&mut self, input: O, label: L) -> dag::Handle<'id, O>
     where
         O: std::fmt::Debug + Send + Sync + 'static,
         L: std::fmt::Debug + Send + Sync + 'static,
@@ -262,10 +282,16 @@ impl<'id, L: 'id> Schedule<'id, L> {
     ///
     /// TODO: is this correct and sufficient?
     /// TODO: really test this...
-    pub fn fail_dependants(&mut self, root: dag::TaskId<'id>) {
+    pub fn fail_dependants(
+        &mut self,
+        execution: &mut Execution<'id>,
+        root: dag::TaskId<'id>,
+    ) -> Vec<dag::TaskId<'id>> {
         let mut queue = vec![root];
         let mut processed = HashSet::new();
         processed.insert(root);
+
+        let mut failed = Vec::new();
 
         while let Some(idx) = queue.pop() {
             for dependant_idx in self
@@ -278,23 +304,29 @@ impl<'id, L: 'id> Schedule<'id, L> {
                 }
 
                 let dependant = &self.dag[dependant_idx.idx()];
-                if dependant.state().is_pending() {
-                    dependant.fail(task::Error::new(Error::FailedDependency));
+                if dependant.state(execution).is_pending() {
+                    dependant.fail(execution, task::Error::new(Error::FailedDependency));
+                    failed.push(dependant_idx);
                 }
 
                 queue.push(dependant_idx);
             }
         }
+
+        failed
     }
 
     /// Iterator over all ready tasks in the schedule.
     ///
     /// A task is ready if all of its dependencies have successfully completed,
     /// such that all inputs are available to the task.
-    pub fn ready(&self) -> impl Iterator<Item = dag::TaskId<'id>> + '_ {
+    pub fn ready<'a>(
+        &'a self,
+        execution: &'a Execution<'id>,
+    ) -> impl Iterator<Item = dag::TaskId<'id>> + 'a {
         self.dag
             .node_indices()
-            .filter(|idx| self.dag[*idx].is_ready())
+            .filter(|idx| self.dag[*idx].is_ready(execution))
             .map(dag::TaskId::new)
     }
 
@@ -302,10 +334,13 @@ impl<'id, L: 'id> Schedule<'id, L> {
     ///
     /// A task is in the `Running` state if it has been scheduled and its
     /// task future is being awaited.
-    pub fn running(&self) -> impl Iterator<Item = dag::TaskId<'id>> + '_ {
+    pub fn running<'a>(
+        &'a self,
+        execution: &'a Execution<'id>,
+    ) -> impl Iterator<Item = dag::TaskId<'id>> + 'a {
         self.dag
             .node_indices()
-            .filter(|idx| self.dag[*idx].state().is_running())
+            .filter(|idx| self.dag[*idx].state(execution).is_running())
             .map(dag::TaskId::new)
     }
 
@@ -320,7 +355,7 @@ impl<'id, L: 'id> Schedule<'id, L> {
     }
 
     #[must_use]
-    pub fn task_state(&self, task_id: dag::TaskId<'id>) -> task::State {
-        self.task(task_id).state()
+    pub fn task_state(&self, execution: &Execution<'id>, task_id: dag::TaskId<'id>) -> task::State {
+        self.task(task_id).state(execution)
     }
 }

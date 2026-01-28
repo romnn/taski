@@ -1,6 +1,6 @@
 #![allow(clippy::just_underscores_and_digits, clippy::used_underscore_binding)]
 
-use taski::{Dependency, PolicyExecutor, Schedule, TaskResult};
+use taski::{PolicyExecutor, Schedule, TaskResult};
 
 async fn sum_two_numbers(lhs: i32, rhs: i32) -> TaskResult<i32> {
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -34,7 +34,7 @@ pub async fn run() -> Option<i32> {
     // optional: render the DAG graph and an execution trace.
     super::render(&executor, "closures");
 
-    _7.output()
+    executor.execution.output_ref(_7).cloned()
 }
 
 #[cfg(test)]

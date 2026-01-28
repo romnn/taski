@@ -3,7 +3,7 @@ use crate::{CombineAudio, Download, Label, Options};
 use color_eyre::eyre;
 use std::sync::Arc;
 use std::time::Instant;
-use taski::{Dependency, PolicyExecutor};
+use taski::PolicyExecutor;
 use tempfile::TempDir;
 
 pub async fn run(options: Options) -> eyre::Result<()> {
@@ -52,7 +52,7 @@ pub async fn run(options: Options) -> eyre::Result<()> {
 
     // copy to example dir so we can test
     if let Some(path) = output_path {
-        if let Some(output_path) = result.output() {
+        if let Some(output_path) = executor.execution.output_ref(result).cloned() {
             tokio::fs::copy(output_path, path).await?;
         }
     }

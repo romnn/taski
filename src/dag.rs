@@ -10,6 +10,20 @@ pub struct TaskId<'id> {
     _invariant: PhantomData<fn(&'id ()) -> &'id ()>,
 }
 
+#[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Handle<'id, O> {
+    task_id: TaskId<'id>,
+    _output: PhantomData<fn() -> O>,
+}
+
+impl<'id, O> Copy for Handle<'id, O> {}
+
+impl<'id, O> Clone for Handle<'id, O> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
 impl<'id> TaskId<'id> {
     #[must_use]
     pub(crate) fn new(idx: Idx) -> Self {
@@ -22,6 +36,26 @@ impl<'id> TaskId<'id> {
     #[must_use]
     pub fn idx(self) -> Idx {
         self.idx
+    }
+}
+
+impl<'id, O> Handle<'id, O> {
+    #[must_use]
+    pub(crate) fn new(task_id: TaskId<'id>) -> Self {
+        Self {
+            task_id,
+            _output: PhantomData,
+        }
+    }
+
+    #[must_use]
+    pub fn task_id(self) -> TaskId<'id> {
+        self.task_id
+    }
+
+    #[must_use]
+    pub fn task_id_ref(&self) -> TaskId<'id> {
+        self.task_id
     }
 }
 

@@ -1,12 +1,14 @@
 use crate::{
     dag,
-    dependency::{Dependencies, Dependency},
+    dependency::Dependencies,
+    execution::Execution,
     schedule::Schedulable,
     task,
 };
 
 use futures::Future;
 use parking_lot::RwLock;
+use std::any::Any;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -108,6 +110,7 @@ impl<I, O> PendingTask<I, O> {
 }
 
 /// Internal state of a task
+#[allow(dead_code)]
 pub(crate) enum InternalState<I, O> {
     /// Task is pending and waiting to be run
     Pending(PendingTask<I, O>),
@@ -120,6 +123,7 @@ pub(crate) enum InternalState<I, O> {
     Failed(Error),
 }
 
+#[allow(dead_code)]
 impl<I, O> InternalState<I, O> {
     /// Whether the task is in `Pending` state.
     #[allow(unused)]
@@ -255,9 +259,7 @@ where
 /// outputs, since that is of importance for using a task node
 /// as a dependency for another task
 pub(crate) struct NodeInner<I, O> {
-    pub(crate) started_at: Option<Instant>,
-    pub(crate) completed_at: Option<Instant>,
-    pub(crate) state: InternalState<I, O>,
+    pub(crate) task: Option<PendingTask<I, O>>,
 }
 
 impl<I, O> NodeInner<I, O> {
@@ -266,11 +268,8 @@ impl<I, O> NodeInner<I, O> {
         T: Task<I, O> + Send + Sync + 'static,
     {
         let task = PendingTask::Task(Box::new(task));
-        let state = InternalState::Pending(task);
         Self {
-            started_at: None,
-            completed_at: None,
-            state,
+            task: Some(task),
         }
     }
 
@@ -280,11 +279,8 @@ impl<I, O> NodeInner<I, O> {
         I: Send + 'static,
     {
         let task = PendingTask::Closure(closure);
-        let state = InternalState::Pending(task);
         Self {
-            started_at: None,
-            completed_at: None,
-            state,
+            task: Some(task),
         }
     }
 }
@@ -294,7 +290,8 @@ pub struct Node<'id, I, O, L> {
     pub color: Option<crate::render::Rgba>,
     pub label: L,
     pub created_at: Instant,
-    pub dependencies: Box<dyn Dependencies<'id, I, L> + Send + Sync + 'id>,
+    pub dependency_task_ids: Vec<dag::TaskId<'id>>,
+    pub dependencies: Box<dyn Dependencies<'id, I> + Send + Sync + 'id>,
     pub index: dag::TaskId<'id>,
 
     pub(crate) inner: Arc<RwLock<NodeInner<I, O>>>,
@@ -304,16 +301,18 @@ impl<'id, I, O, L> Node<'id, I, O, L> {
     pub fn new<T, D>(task: T, deps: D, label: L, index: dag::TaskId<'id>) -> Self
     where
         T: task::Task<I, O> + Send + Sync + 'static,
-        D: Dependencies<'id, I, L> + Send + Sync + 'id,
+        D: Dependencies<'id, I> + Send + Sync + 'id,
     {
         let color = task.color();
         #[cfg(feature = "render")]
         let color = Some(color.unwrap_or_else(|| crate::render::color_from_id(index)));
+        let dependency_task_ids = deps.task_ids();
         Self {
             task_name: task.name(),
             color,
             label,
             created_at: Instant::now(),
+            dependency_task_ids,
             inner: Arc::new(RwLock::new(task::NodeInner::new(task))),
             dependencies: Box::new(deps),
             index,
@@ -323,18 +322,20 @@ impl<'id, I, O, L> Node<'id, I, O, L> {
     pub fn closure<C, D>(closure: Box<C>, deps: D, label: L, index: dag::TaskId<'id>) -> Self
     where
         C: Closure<I, O> + Send + Sync + 'static,
-        D: Dependencies<'id, I, L> + Send + Sync + 'id,
+        D: Dependencies<'id, I> + Send + Sync + 'id,
         I: Send + 'static,
     {
         #[cfg(not(feature = "render"))]
         let color = None;
         #[cfg(feature = "render")]
         let color = Some(crate::render::color_from_id(index));
+        let dependency_task_ids = deps.task_ids();
         Self {
             task_name: "<unnamed>".to_string(),
             color,
             label,
             created_at: Instant::now(),
+            dependency_task_ids,
             inner: Arc::new(RwLock::new(task::NodeInner::closure(closure))),
             dependencies: Box::new(deps),
             index,
@@ -367,35 +368,24 @@ where
     O: std::fmt::Debug + Send + Sync + 'static,
     L: std::fmt::Debug + Send + Sync + 'static,
 {
-    fn succeeded(&self) -> bool {
-        let inner = self.inner.read();
-        inner.state.did_succeed()
+    fn succeeded(&self, execution: &Execution<'id>) -> bool {
+        execution.state(self.index()).did_succeed()
     }
 
-    fn fail(&self, err: Error) {
-        let mut inner = self.inner.write();
-        inner.state = InternalState::Failed(err);
+    fn fail(&self, execution: &mut Execution<'id>, err: Error) {
+        execution.mark_failed(self.index(), Instant::now(), err);
     }
 
-    fn state(&self) -> State {
-        let inner = self.inner.read();
-        match inner.state {
-            InternalState::Pending(_) => State::Pending,
-            InternalState::Running => State::Running,
-            InternalState::Succeeded(_) => State::Succeeded,
-            InternalState::Failed(_) => State::Failed,
-        }
+    fn state(&self, execution: &Execution<'id>) -> State {
+        execution.state(self.index())
     }
 
-    fn as_argument(&self) -> String {
-        let inner = self.inner.read();
-        match inner.state {
-            InternalState::Pending(_) => "<pending>".to_string(),
-            InternalState::Running => "<running>".to_string(),
-            InternalState::Succeeded(ref value) => {
-                format!("{value:?}")
-            }
-            InternalState::Failed(_) => "<failed>".to_string(),
+    fn as_argument(&self, execution: &Execution<'id>) -> String {
+        match execution.state(self.index()) {
+            State::Pending => "<pending>".to_string(),
+            State::Running => "<running>".to_string(),
+            State::Succeeded => "<succeeded>".to_string(),
+            State::Failed => "<failed>".to_string(),
         }
     }
 
@@ -403,68 +393,43 @@ where
         self.created_at
     }
 
-    fn started_at(&self) -> Option<Instant> {
-        let inner = self.inner.read();
-        inner.started_at
+    fn started_at(&self, execution: &Execution<'id>) -> Option<Instant> {
+        execution.started_at(self.index())
     }
 
-    fn completed_at(&self) -> Option<Instant> {
-        let inner = self.inner.read();
-        inner.completed_at
+    fn completed_at(&self, execution: &Execution<'id>) -> Option<Instant> {
+        execution.completed_at(self.index())
     }
 
     fn index(&self) -> dag::TaskId<'id> {
         self.index
     }
 
-    fn run(&self) -> Option<crate::schedule::Fut<'id>> {
+    fn run(&self, execution: &Execution<'id>) -> Option<crate::schedule::Fut<'id>> {
         // get the inputs from the dependencies
-        let Some(inputs) = self.dependencies.inputs() else {
+        let Some(inputs) = self.dependencies.inputs(execution) else {
             return None;
         };
 
-        let task = {
-            let mut inner = self.inner.write();
-
-            if let InternalState::Pending(_) = inner.state {
-                // set the state to running
-                // this takes ownership of the task
-                let task = std::mem::replace(&mut inner.state, InternalState::Running);
-                let InternalState::Pending(task) = task else {
-                    return None;
-                };
-                inner.started_at.get_or_insert(Instant::now());
-                task
-            } else {
-                // already ran
-                return None;
-            }
-        };
+        let task = self.inner.write().task.take()?;
 
         let idx = self.index();
         #[cfg(feature = "render")]
         let color = *self.color();
         let label = self.to_string();
-        let inner = Arc::clone(&self.inner);
+        let start = execution.started_at(idx).unwrap_or_else(Instant::now);
 
         Some(Box::pin(async move {
             log::debug!("running {label}");
-
-            let start = Instant::now();
 
             // this will consume the task
             let result = task.run(inputs).await;
 
             let end = Instant::now();
 
-            let mut inner = inner.write();
-            inner.completed_at.get_or_insert(end);
-
-            assert!(inner.state.is_running());
-            inner.state = match result {
-                Ok(output) => InternalState::Succeeded(output),
-                Err(err) => InternalState::Failed(err.into()),
-            };
+            let result = result
+                .map(|output| Arc::new(output) as Arc<dyn Any + Send + Sync>)
+                .map_err(Error::from);
 
             let traced = crate::trace::Task {
                 label,
@@ -473,7 +438,7 @@ where
                 start,
                 end,
             };
-            (idx, traced)
+            (idx, traced, result)
         }))
     }
 
@@ -489,23 +454,8 @@ where
         &self.color
     }
 
-    fn dependencies(&self) -> Vec<Arc<dyn Schedulable<'id, L> + 'id>> {
-        self.dependencies.to_vec()
-    }
-}
-
-impl<'id, I, O, L> Dependency<'id, O, L> for Node<'id, I, O, L>
-where
-    I: std::fmt::Debug + Send + Sync + 'static,
-    O: std::fmt::Debug + Clone + Send + Sync + 'static,
-    L: std::fmt::Debug + Send + Sync + 'static,
-{
-    fn output(&self) -> Option<O> {
-        let inner = self.inner.read();
-        match inner.state {
-            InternalState::Succeeded(ref output) => Some(output.clone()),
-            _ => None,
-        }
+    fn dependencies(&self) -> &[dag::TaskId<'id>] {
+        self.dependency_task_ids.as_slice()
     }
 }
 
