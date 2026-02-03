@@ -21,15 +21,15 @@ impl taski::Task2<i32, i32, i32> for SumTwoNumbers {
 pub async fn run() -> eyre::Result<Option<i32>> {
     taski::make_guard!(guard);
     let mut graph = Schedule::new(guard);
-    let _1 = graph.add_input(1, ());
-    let _2 = graph.add_input(2, ());
-    let _4 = graph.add_input(4, ());
+    let _1 = graph.add_input(1);
+    let _2 = graph.add_input(2);
+    let _4 = graph.add_input(4);
 
     // sets _1 and _2 as _3's dependencies (arguments)
-    let _3 = graph.add_node(SumTwoNumbers {}, (_1, _2), ())?;
+    let _3 = graph.add_node(SumTwoNumbers {}, (_1, _2))?;
 
     // sets _3 and _4 as _7's dependencies (arguments)
-    let _7 = graph.add_node(SumTwoNumbers {}, (_3, _4), ())?;
+    let _7 = graph.add_node(SumTwoNumbers {}, (_3, _4))?;
 
     let mut executor = PolicyExecutor::fifo(graph);
     executor.run().await?;

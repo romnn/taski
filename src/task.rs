@@ -8,13 +8,7 @@
 //! Both styles ultimately produce a task that returns a [`Result`]. Returning an error will fail
 //! the task and (by default) fail dependants.
 
-use crate::{
-    dag,
-    dependency::Dependencies,
-    execution::Execution,
-    schedule::Schedulable,
-    task,
-};
+use crate::{dag, dependency::Dependencies, execution::Execution, schedule::Schedulable, task};
 
 use futures::Future;
 use parking_lot::Mutex;
@@ -23,6 +17,7 @@ use std::hash::{Hash, Hasher};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::Instrument;
 
 fn summarize(s: &dyn std::fmt::Debug, max_length: usize) -> String {
     let s = format!("{s:?}");
@@ -103,7 +98,7 @@ impl From<Box<dyn std::error::Error + Send + Sync + 'static>> for Error {
 pub type Result<O> = std::result::Result<O, Box<dyn std::error::Error + Send + Sync + 'static>>;
 
 /// Boxed future returned by closure-based tasks.
-pub type Fut<O> = Pin<Box<dyn Future<Output = Result<O>> + Send>>;
+pub type Fut<O> = Pin<Box<dyn Future<Output = Result<O>>>>;
 
 /// Internal abstraction for async closures used with [`crate::Schedule::add_closure`].
 ///
@@ -300,9 +295,7 @@ impl<I, O> NodeInner<I, O> {
         T: Task<I, O> + Send + Sync + 'static,
     {
         let task = PendingTask::Task(Box::new(task));
-        Self {
-            task: Some(task),
-        }
+        Self { task: Some(task) }
     }
 
     pub fn closure<C>(closure: Box<C>) -> Self
@@ -311,9 +304,7 @@ impl<I, O> NodeInner<I, O> {
         I: Send + 'static,
     {
         let task = PendingTask::Closure(closure);
-        Self {
-            task: Some(task),
-        }
+        Self { task: Some(task) }
     }
 }
 
@@ -336,8 +327,8 @@ pub struct Node<'id, I, O, L> {
     /// When the `render` feature is enabled, a default color may be derived from the task id.
     pub color: Option<crate::render::Rgba>,
 
-    /// User-provided label used by scheduling policies.
-    pub label: L,
+    /// User-provided metadata.
+    pub metadata: L,
 
     /// When this node was created.
     pub created_at: Instant,
@@ -360,7 +351,7 @@ impl<'id, I, O, L> Node<'id, I, O, L> {
         task: T,
         deps: D,
         dependency_task_ids: Vec<dag::TaskId<'id>>,
-        label: L,
+        metadata: L,
         index: dag::TaskId<'id>,
     ) -> Self
     where
@@ -373,7 +364,7 @@ impl<'id, I, O, L> Node<'id, I, O, L> {
         Self {
             task_name: task.name(),
             color,
-            label,
+            metadata,
             created_at: Instant::now(),
             dependency_task_ids,
             inner: Arc::new(Mutex::new(task::NodeInner::new(task))),
@@ -387,22 +378,33 @@ impl<'id, I, O, L> Node<'id, I, O, L> {
         closure: Box<C>,
         deps: D,
         dependency_task_ids: Vec<dag::TaskId<'id>>,
-        label: L,
+        metadata: L,
         index: dag::TaskId<'id>,
     ) -> Self
     where
         C: Closure<I, O> + Send + Sync + 'static,
         D: Dependencies<'id, I> + Send + Sync + 'id,
         I: Send + 'static,
+        L: std::fmt::Debug,
     {
         #[cfg(not(feature = "render"))]
         let color = None;
         #[cfg(feature = "render")]
         let color = Some(crate::render::color_from_id(index));
+
+        let task_name = {
+            let task_name = format!("{metadata:?}");
+            if task_name == "()" {
+                "<unnamed>".to_string()
+            } else {
+                task_name
+            }
+        };
+
         Self {
-            task_name: "<unnamed>".to_string(),
+            task_name,
             color,
-            label,
+            metadata,
             created_at: Instant::now(),
             dependency_task_ids,
             inner: Arc::new(Mutex::new(task::NodeInner::closure(closure))),
@@ -419,11 +421,11 @@ impl<I, O, L> Hash for Node<'_, I, O, L> {
     }
 }
 
-impl<I, O, L> std::fmt::Display for Node<'_, I, O, L>
+impl<'id, I, O, L> std::fmt::Display for Node<'id, I, O, L>
 where
-    I: std::fmt::Debug + Send + Sync + 'static,
-    O: std::fmt::Debug + Send + Sync + 'static,
-    L: std::fmt::Debug + Send + Sync + 'static,
+    I: std::fmt::Debug + Send + 'static,
+    O: std::fmt::Debug + Send + 'static,
+    L: std::fmt::Debug + Send + Sync + 'id,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.signature())
@@ -433,9 +435,9 @@ where
 #[async_trait::async_trait]
 impl<'id, I, O, L> Schedulable<'id, L> for Node<'id, I, O, L>
 where
-    I: std::fmt::Debug + Send + Sync + 'static,
-    O: std::fmt::Debug + Send + Sync + 'static,
-    L: std::fmt::Debug + Send + Sync + 'static,
+    I: std::fmt::Debug + Send + 'static,
+    O: std::fmt::Debug + Send + 'static,
+    L: std::fmt::Debug + Send + Sync + 'id,
 {
     fn succeeded(&self, execution: &Execution<'id>) -> bool {
         execution.state(self.index()).did_succeed()
@@ -474,7 +476,7 @@ where
         self.index
     }
 
-    fn run(&self, execution: &Execution<'id>) -> Option<crate::schedule::Fut<'id>> {
+    fn run(&self, execution: &Execution<'id>) -> Option<crate::schedule::TaskOutputFut<'id>> {
         // get the inputs from the dependencies
         let inputs = self.dependencies.inputs(execution)?;
 
@@ -486,31 +488,43 @@ where
         let label = self.to_string();
         let start = execution.started_at(idx).unwrap_or_else(Instant::now);
 
-        Some(Box::pin(async move {
-            log::debug!("running {label}");
+        let task_name = self.task_name.clone();
+        let otel_name = format!("taski::{task_name}");
 
-            // this will consume the task
-            let result = task.run(inputs).await;
+        Some(Box::pin(
+            async move {
+                log::debug!("running {label}");
 
-            let end = Instant::now();
+                // this will consume the task
+                let result = task.run(inputs).await;
 
-            let result = result
-                .map(|output| Arc::new(output) as Arc<dyn Any + Send + Sync>)
-                .map_err(Error::from);
+                let end = Instant::now();
 
-            let traced = crate::trace::Task {
-                label,
-                #[cfg(feature = "render")]
-                color,
-                start,
-                end,
-            };
-            (idx, traced, result)
-        }))
+                let result = result
+                    .map(|output| Box::new(output) as Box<dyn Any + Send>)
+                    .map_err(Error::from);
+
+                let traced = crate::trace::Task {
+                    label,
+                    #[cfg(feature = "render")]
+                    color,
+                    start,
+                    end,
+                };
+                (idx, traced, result)
+            }
+            .instrument(tracing::trace_span!(
+                "taski.task",
+                task_index = idx.idx().index(),
+                task_name = %task_name,
+                {"perfetto.track_name"} = %task_name,
+                {"otel.name"} = %otel_name
+            )),
+        ))
     }
 
-    fn label(&self) -> &L {
-        &self.label
+    fn metadata(&self) -> &L {
+        &self.metadata
     }
 
     fn name(&self) -> &str {
@@ -662,7 +676,7 @@ The returned future must resolve to [`crate::task::Result<O>`].
         impl<F, C, $( $type ),*, O> $name<$( $type ),*, O> for C
         where
             C: FnOnce($( $type ),*) -> F,
-            F: Future<Output = Result<O>> + Send + 'static,
+            F: Future<Output = Result<O>> + 'static,
         {
             fn run(self: Box<Self>, $($type: $type),*) -> Fut<O> {
                 Box::pin(self($( $type ),*))
@@ -699,7 +713,7 @@ closure!(Closure8: T1, T2, T3, T4, T5, T6, T7, T8);
 impl<F, C, O> Closure<(), O> for C
 where
     C: FnOnce() -> F,
-    F: Future<Output = Result<O>> + Send + 'static,
+    F: Future<Output = Result<O>> + 'static,
 {
     fn run(self: Box<Self>, (): ()) -> Fut<O> {
         Box::pin(self())

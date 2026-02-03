@@ -8,7 +8,7 @@
 
 use crate::{dag, execution::Execution, policy, schedule, schedule::Schedule, task, trace};
 
-use std::pin::Pin;
+use std::time::Duration;
 
 /// A report of a schedule execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +38,29 @@ pub enum RunError {
         /// Node indices that are still pending.
         pending_task_indices: Vec<usize>,
     },
+
+    /// The execution timed out.
+    #[error("execution timed out after {timeout:?} with {unfinished_tasks} unfinished tasks")]
+    TimedOut {
+        /// Configured timeout.
+        timeout: Duration,
+
+        /// Number of tasks that have not yet finished.
+        unfinished_tasks: usize,
+
+        /// Node indices that are still pending.
+        pending_task_indices: Vec<usize>,
+
+        /// Node indices that were running at timeout.
+        running_task_indices: Vec<usize>,
+    },
+}
+
+/// An error used for failing individual tasks due to timeouts.
+#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+pub enum TimeoutError {
+    #[error("task timed out after {timeout:?}")]
+    TaskTimedOut { timeout: Duration },
 }
 
 /// Executes a [`Schedule`] using a scheduling policy.
@@ -54,11 +77,12 @@ pub struct PolicyExecutor<'id, P, L> {
     execution: Execution<'id>,
     policy: P,
     trace: trace::Trace<dag::TaskId<'id>>,
+    timeout: Option<Duration>,
 }
 
 impl<'id, P, L> PolicyExecutor<'id, P, L>
 where
-    L: 'static,
+    L: 'id,
 {
     /// Creates a new executor with a custom policy.
     #[must_use]
@@ -71,7 +95,29 @@ where
             execution,
             policy,
             trace: trace::Trace::new(),
+            timeout: None,
         }
+    }
+
+    /// Sets an optional timeout for the entire execution.
+    #[must_use]
+    pub fn timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Sets an optional timeout for an individual task.
+    pub fn set_task_timeout(&mut self, task_id: dag::TaskId<'id>, timeout: Option<Duration>) {
+        self.execution.set_task_timeout(task_id, timeout);
+    }
+
+    /// Sets an optional timeout for an individual task.
+    pub fn set_task_timeout_handle<O: 'static>(
+        &mut self,
+        handle: dag::Handle<'id, O>,
+        timeout: Option<Duration>,
+    ) {
+        self.execution.set_task_timeout_handle(handle, timeout);
     }
 
     /// Returns the underlying schedule.
@@ -93,6 +139,15 @@ where
         &mut self.execution
     }
 
+    /// Returns references to the schedule and execution state.
+    ///
+    /// This avoids borrow conflicts when a caller needs schedule metadata while also mutating the
+    /// execution.
+    #[must_use]
+    pub fn schedule_and_execution_mut(&mut self) -> (&Schedule<'id, L>, &mut Execution<'id>) {
+        (&self.schedule, &mut self.execution)
+    }
+
     /// Returns the execution trace collected during the run.
     #[must_use]
     pub fn trace(&self) -> &trace::Trace<dag::TaskId<'id>> {
@@ -107,7 +162,7 @@ where
 
 impl<'id, L> PolicyExecutor<'id, policy::Fifo, L>
 where
-    L: 'static,
+    L: 'id,
 {
     /// Creates a new executor with a FIFO policy.
     #[must_use]
@@ -120,6 +175,7 @@ where
             execution,
             trace: trace::Trace::new(),
             policy: policy::Fifo::default(),
+            timeout: None,
         }
     }
 
@@ -133,11 +189,11 @@ where
 
 impl<'id, L> PolicyExecutor<'id, policy::Priority, L>
 where
-    L: std::cmp::Ord + 'static,
+    L: std::cmp::Ord + 'id,
 {
     /// Creates a new executor with a priority policy.
     ///
-    /// The priority is given by the task label.
+    /// The priority is given by the task metadata.
     #[must_use]
     pub fn priority(schedule: Schedule<'id, L>) -> Self {
         let schedule_id = schedule.schedule_id();
@@ -148,6 +204,7 @@ where
             execution,
             trace: trace::Trace::new(),
             policy: policy::Priority::default(),
+            timeout: None,
         }
     }
 
@@ -162,7 +219,7 @@ where
 impl<'id, P, L> PolicyExecutor<'id, P, L>
 where
     P: policy::Policy<'id, L>,
-    L: 'static,
+    L: 'id,
 {
     /// Runs the tasks in the graph.
     ///
@@ -172,18 +229,13 @@ where
     #[allow(clippy::too_many_lines)]
     pub async fn run(&mut self) -> Result<RunReport, RunError> {
         use futures::stream::{FuturesUnordered, StreamExt};
-        use std::future::Future;
         use std::time::Instant;
 
-        type TaskOutput<'id> = (
-            dag::TaskId<'id>,
-            trace::Task,
-            Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, task::Error>,
-        );
+        let mut running_tasks: FuturesUnordered<schedule::TaskOutputFut<'id>> =
+            FuturesUnordered::new();
 
-        type TaskOutputFut<'id> = Pin<Box<dyn Future<Output = TaskOutput<'id>> + Send + 'id>>;
-
-        let mut running_tasks: FuturesUnordered<TaskOutputFut<'id>> = FuturesUnordered::new();
+        let deadline = self.timeout.map(|timeout| Instant::now() + timeout);
+        let mut running_task_ids: Vec<dag::TaskId<'id>> = Vec::new();
 
         let node_count = self.schedule.dag.node_count();
         let mut succeeded_tasks = 0usize;
@@ -214,8 +266,47 @@ where
                 self.execution.mark_running(task_id, Instant::now());
                 self.policy.on_task_started(task_id, &self.schedule);
 
+                running_task_ids.push(task_id);
+
                 if let Some(task_fut) = task.run(&self.execution) {
-                    running_tasks.push(task_fut);
+                    let task_timeout = self.execution.task_timeout(task_id);
+                    if let Some(task_timeout) = task_timeout {
+                        let label = task.to_string();
+                        #[cfg(feature = "render")]
+                        let color = *task.color();
+                        let start = self
+                            .execution
+                            .started_at(task_id)
+                            .unwrap_or_else(Instant::now);
+                        let timeout_fut = futures_timer::Delay::new(task_timeout);
+                        let task_fut: schedule::TaskOutputFut<'id> = Box::pin(async move {
+                            futures::pin_mut!(task_fut);
+                            futures::pin_mut!(timeout_fut);
+                            match futures::future::select(task_fut, timeout_fut).await {
+                                futures::future::Either::Left((output, _)) => output,
+                                futures::future::Either::Right(((), _)) => {
+                                    let end = Instant::now();
+                                    let traced = crate::trace::Task {
+                                        label,
+                                        #[cfg(feature = "render")]
+                                        color,
+                                        start,
+                                        end,
+                                    };
+                                    (
+                                        task_id,
+                                        traced,
+                                        Err(task::Error::new(TimeoutError::TaskTimedOut {
+                                            timeout: task_timeout,
+                                        })),
+                                    )
+                                }
+                            }
+                        });
+                        running_tasks.push(task_fut);
+                    } else {
+                        running_tasks.push(task_fut);
+                    }
                 } else {
                     task.fail(
                         &mut self.execution,
@@ -240,7 +331,78 @@ where
                 break;
             }
 
-            let Some((task_id, traced, result)) = running_tasks.next().await else {
+            let next_output = if let Some(deadline) = deadline {
+                let now = Instant::now();
+                if now >= deadline {
+                    let pending_task_indices: Vec<_> = self
+                        .schedule
+                        .dag
+                        .node_indices()
+                        .filter_map(|idx| {
+                            let task_id = dag::TaskId::new(self.schedule_id, idx);
+                            if self.execution.state(task_id).is_pending() {
+                                Some(idx.index())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+
+                    let running_task_indices: Vec<_> = running_task_ids
+                        .iter()
+                        .filter(|&&task_id| self.execution.state(task_id).is_running())
+                        .map(|task_id| task_id.idx().index())
+                        .collect();
+
+                    return Err(RunError::TimedOut {
+                        timeout: self.timeout.unwrap_or_default(),
+                        unfinished_tasks: self.execution.unfinished_count(),
+                        pending_task_indices,
+                        running_task_indices,
+                    });
+                }
+
+                let remaining = deadline.saturating_duration_since(now);
+                let timeout_fut = futures_timer::Delay::new(remaining);
+                let next_task_fut = running_tasks.next();
+                futures::pin_mut!(timeout_fut);
+                futures::pin_mut!(next_task_fut);
+                match futures::future::select(next_task_fut, timeout_fut).await {
+                    futures::future::Either::Left((output, _)) => output,
+                    futures::future::Either::Right(((), _)) => {
+                        let pending_task_indices: Vec<_> = self
+                            .schedule
+                            .dag
+                            .node_indices()
+                            .filter_map(|idx| {
+                                let task_id = dag::TaskId::new(self.schedule_id, idx);
+                                if self.execution.state(task_id).is_pending() {
+                                    Some(idx.index())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+
+                        let running_task_indices: Vec<_> = running_task_ids
+                            .iter()
+                            .filter(|&&task_id| self.execution.state(task_id).is_running())
+                            .map(|task_id| task_id.idx().index())
+                            .collect();
+
+                        return Err(RunError::TimedOut {
+                            timeout: self.timeout.unwrap_or_default(),
+                            unfinished_tasks: self.execution.unfinished_count(),
+                            pending_task_indices,
+                            running_task_indices,
+                        });
+                    }
+                }
+            } else {
+                running_tasks.next().await
+            };
+
+            let Some((task_id, traced, result)) = next_output else {
                 let pending_task_indices: Vec<_> = self
                     .schedule
                     .dag
@@ -260,6 +422,8 @@ where
                     pending_task_indices,
                 });
             };
+
+            running_task_ids.retain(|&id| id != task_id);
 
             self.trace.tasks.push((task_id, traced));
 

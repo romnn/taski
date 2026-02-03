@@ -23,8 +23,8 @@
 //!         make_guard!(guard);
 //!         let mut schedule: Schedule<'_, ()> = Schedule::new(guard);
 //!
-//!         let input = schedule.add_input(1_i32, ());
-//!         let output = schedule.add_closure(add_one, (input,), ())?;
+//!         let input = schedule.add_input(1_i32);
+//!         let output = schedule.add_closure(add_one, (input,))?;
 //!
 //!         let mut executor = PolicyExecutor::fifo(schedule);
 //!         executor.run().await?;
@@ -63,8 +63,8 @@ pub use task::{Closure1, Closure2, Closure3, Closure4, Closure5, Closure6, Closu
 pub use task::{Error, Input as TaskInput, Ref as TaskRef, Result as TaskResult};
 pub use task::{Task0, Task1, Task2, Task3, Task4, Task5, Task6, Task7, Task8};
 
- #[cfg(doctest)]
- mod compile_fail_tests;
+#[cfg(doctest)]
+mod compile_fail_tests;
 
 #[cfg(test)]
 mod tests {
@@ -182,12 +182,18 @@ mod tests {
         make_guard!(guard);
         let mut graph = Schedule::new(guard);
 
-        let n1_p1 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 1 })?;
-        let n2_p1 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 1 })?;
-        let n3_p2 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 2 })?;
-        let n4_p1 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 1 })?;
-        let n5_p4 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 4 })?;
-        let n6_p3 = graph.add_closure(|| async { Ok(()) }, (), Label { priority: 3 })?;
+        let n1_p1 =
+            graph.add_closure_with_metadata(|| async { Ok(()) }, (), Label { priority: 1 })?;
+        let n2_p1 =
+            graph.add_closure_with_metadata(|| async { Ok(()) }, (), Label { priority: 1 })?;
+        let n3_p2 =
+            graph.add_closure_with_metadata(|| async { Ok(()) }, (), Label { priority: 2 })?;
+        let n4_p1 =
+            graph.add_closure_with_metadata(|| async { Ok(()) }, (), Label { priority: 1 })?;
+        let n5_p4 =
+            graph.add_closure_with_metadata(|| async { Ok(()) }, (), Label { priority: 4 })?;
+        let n6_p3 =
+            graph.add_closure_with_metadata(|| async { Ok(()) }, (), Label { priority: 3 })?;
 
         let mut executor = PolicyExecutor::priority(graph).max_concurrent(Some(1));
 
@@ -241,7 +247,11 @@ mod tests {
                 self.running_by_label.clear();
             }
 
-            fn on_task_ready(&mut self, task_id: dag::TaskId<'id>, _schedule: &schedule::Schedule<'id, Label>) {
+            fn on_task_ready(
+                &mut self,
+                task_id: dag::TaskId<'id>,
+                _schedule: &schedule::Schedule<'id, Label>,
+            ) {
                 self.ready.push_back(task_id.idx());
             }
 
@@ -250,7 +260,7 @@ mod tests {
                 task_id: dag::TaskId<'id>,
                 schedule: &schedule::Schedule<'id, Label>,
             ) {
-                let label = *schedule.task_label(task_id);
+                let label = *schedule.task_metadata(task_id);
                 *self.running_by_label.entry(label).or_insert(0) += 1;
             }
 
@@ -260,7 +270,7 @@ mod tests {
                 _state: task::State,
                 schedule: &schedule::Schedule<'id, Label>,
             ) {
-                let label = *schedule.task_label(task_id);
+                let label = *schedule.task_metadata(task_id);
                 if let Some(running) = self.running_by_label.get_mut(&label) {
                     *running = running.saturating_sub(1);
                     if *running == 0 {
@@ -284,7 +294,7 @@ mod tests {
                         continue;
                     }
 
-                    let label = *schedule.task_label(task_id);
+                    let label = *schedule.task_metadata(task_id);
                     let running = self.running_by_label.get(&label).copied().unwrap_or(0);
                     match self.limits.get(&label) {
                         Some(limit) if running < *limit => return Some(task_id),
@@ -341,20 +351,20 @@ mod tests {
         let mut graph = Schedule::new(guard);
 
         let download = Download {};
-        let d1 = graph.add_node(download.clone(), (), Label::Download)?;
-        let d2 = graph.add_node(download.clone(), (), Label::Download)?;
-        let d3 = graph.add_node(download.clone(), (), Label::Download)?;
-        let d4 = graph.add_node(download.clone(), (), Label::Download)?;
-        let d5 = graph.add_node(download.clone(), (), Label::Download)?;
-        let d6 = graph.add_node(download.clone(), (), Label::Download)?;
+        let d1 = graph.add_node_with_metadata(download.clone(), (), Label::Download)?;
+        let d2 = graph.add_node_with_metadata(download.clone(), (), Label::Download)?;
+        let d3 = graph.add_node_with_metadata(download.clone(), (), Label::Download)?;
+        let d4 = graph.add_node_with_metadata(download.clone(), (), Label::Download)?;
+        let d5 = graph.add_node_with_metadata(download.clone(), (), Label::Download)?;
+        let d6 = graph.add_node_with_metadata(download.clone(), (), Label::Download)?;
 
         let process = Process {};
-        let _p1 = graph.add_node(process.clone(), (d1,), Label::Process)?;
-        let _p2 = graph.add_node(process.clone(), (d2,), Label::Process)?;
-        let _p3 = graph.add_node(process.clone(), (d3,), Label::Process)?;
-        let _p4 = graph.add_node(process.clone(), (d4,), Label::Process)?;
-        let _p5 = graph.add_node(process.clone(), (d5,), Label::Process)?;
-        let _p6 = graph.add_node(process.clone(), (d6,), Label::Process)?;
+        let _p1 = graph.add_node_with_metadata(process.clone(), (d1,), Label::Process)?;
+        let _p2 = graph.add_node_with_metadata(process.clone(), (d2,), Label::Process)?;
+        let _p3 = graph.add_node_with_metadata(process.clone(), (d3,), Label::Process)?;
+        let _p4 = graph.add_node_with_metadata(process.clone(), (d4,), Label::Process)?;
+        let _p5 = graph.add_node_with_metadata(process.clone(), (d5,), Label::Process)?;
+        let _p6 = graph.add_node_with_metadata(process.clone(), (d6,), Label::Process)?;
 
         let mut executor = PolicyExecutor::custom(
             graph,
@@ -411,12 +421,13 @@ mod tests {
         make_guard!(guard);
         let mut graph = Schedule::new(guard);
 
-        let i0 = graph.add_input("Hello".to_string(), Label::Input);
+        let i0 = graph.add_input_with_metadata("Hello".to_string(), Label::Input);
 
-        let n0 = graph.add_node(identity.clone(), (i0,), Label::Identity)?;
-        let n1 = graph.add_node(identity.clone(), (n0,), Label::Identity)?;
-        let n2 = graph.add_node(identity.clone(), (n0,), Label::Identity)?;
-        let result_node = graph.add_node(combine.clone(), (n1, n2), Label::Combine)?;
+        let n0 = graph.add_node_with_metadata(identity.clone(), (i0,), Label::Identity)?;
+        let n1 = graph.add_node_with_metadata(identity.clone(), (n0,), Label::Identity)?;
+        let n2 = graph.add_node_with_metadata(identity.clone(), (n0,), Label::Identity)?;
+        let result_node =
+            graph.add_node_with_metadata(combine.clone(), (n1, n2), Label::Combine)?;
 
         let mut executor = PolicyExecutor::fifo(graph);
 
@@ -432,5 +443,55 @@ mod tests {
         assert_eq!(output.as_deref(), Some("Hello Hello"));
 
         Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn task_timeout_fails_task() -> eyre::Result<()> {
+        init_test()?;
+
+        make_guard!(guard);
+        let mut schedule: Schedule<'_, ()> = Schedule::new(guard);
+
+        let slow = schedule.add_closure(
+            || async {
+                futures_timer::Delay::new(Duration::from_millis(200)).await;
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+            },
+            (),
+        )?;
+
+        let mut executor = PolicyExecutor::fifo(schedule);
+        executor.set_task_timeout_handle(slow, Some(Duration::from_millis(10)));
+        let report = executor.run().await?;
+
+        assert_eq!(report.failed_tasks, 1);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_timeout_returns_error() -> eyre::Result<()> {
+        init_test()?;
+
+        make_guard!(guard);
+        let mut schedule: Schedule<'_, ()> = Schedule::new(guard);
+
+        let _slow = schedule.add_closure(
+            || async {
+                futures_timer::Delay::new(Duration::from_millis(200)).await;
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+            },
+            (),
+        )?;
+
+        let mut executor = PolicyExecutor::fifo(schedule).timeout(Some(Duration::from_millis(10)));
+        let err = executor
+            .run()
+            .await
+            .err()
+            .ok_or_else(|| eyre::eyre!("expected error"))?;
+        match err {
+            executor::RunError::TimedOut { .. } => Ok(()),
+            other => Err(eyre::eyre!("unexpected error: {other}")),
+        }
     }
 }

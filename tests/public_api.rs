@@ -1,8 +1,8 @@
 use color_eyre::eyre;
 use std::collections::VecDeque;
 use std::time::Duration;
-use taski::dag;
 use taski::Dependencies;
+use taski::dag;
 use taski::{PolicyExecutor, Schedule, TaskResult};
 
 async fn ok_unit() -> TaskResult<()> {
@@ -108,7 +108,7 @@ async fn task_fails_if_dependencies_inputs_are_unavailable() -> eyre::Result<()>
     taski::make_guard!(guard);
     let mut schedule = Schedule::new(guard);
 
-    let handle = schedule.add_closure(ok_unit, NeverInputs, ())?;
+    let handle = schedule.add_closure(ok_unit, NeverInputs)?;
 
     let mut executor = PolicyExecutor::fifo(schedule);
     let report = executor.run().await?;
@@ -197,11 +197,11 @@ async fn policy_hooks_fire_once_per_task_in_successful_run() -> eyre::Result<()>
     taski::make_guard!(guard);
     let mut schedule = Schedule::new(guard);
 
-    let input = schedule.add_input(1_u32, ());
+    let input = schedule.add_input(1_u32);
 
-    let a = schedule.add_closure(add_one_u32, (input,), ())?;
-    let b = schedule.add_closure(add_two_u32, (input,), ())?;
-    let _c = schedule.add_closure(sum_u32, (a, b), ())?;
+    let a = schedule.add_closure(add_one_u32, (input,))?;
+    let b = schedule.add_closure(add_two_u32, (input,))?;
+    let _c = schedule.add_closure(sum_u32, (a, b))?;
 
     let log = std::sync::Arc::new(std::sync::Mutex::new(EventPolicyLog {
         reset_count: 0,
@@ -222,7 +222,9 @@ async fn policy_hooks_fire_once_per_task_in_successful_run() -> eyre::Result<()>
     assert_eq!(report.succeeded_tasks, 4);
     assert_eq!(report.failed_tasks, 0);
 
-    let guard = log.lock().map_err(|_| eyre::eyre!("failed to lock policy log"))?;
+    let guard = log
+        .lock()
+        .map_err(|_| eyre::eyre!("failed to lock policy log"))?;
     assert_eq!(guard.reset_count, 1);
 
     let mut unique_ready = guard.ready.clone();
@@ -257,9 +259,9 @@ async fn render_smoke_tests_for_empty_and_non_empty() -> eyre::Result<()> {
 
     taski::make_guard!(guard_non_empty);
     let mut schedule = Schedule::new(guard_non_empty);
-    let i1 = schedule.add_input(1_u32, ());
+    let i1 = schedule.add_input(1_u32);
 
-    let h = schedule.add_closure(add_one_u32, (i1,), ())?;
+    let h = schedule.add_closure(add_one_u32, (i1,))?;
 
     let mut executor = PolicyExecutor::fifo(schedule);
     executor.run().await?;
@@ -276,19 +278,20 @@ async fn tuple_dependencies_work_up_to_eight_inputs() -> eyre::Result<()> {
     taski::make_guard!(guard);
     let mut schedule = Schedule::new(guard);
 
-    let h1 = schedule.add_input(1_u32, ());
-    let h2 = schedule.add_input(2_u32, ());
-    let h3 = schedule.add_input(3_u32, ());
-    let h4 = schedule.add_input(4_u32, ());
-    let h5 = schedule.add_input(5_u32, ());
-    let h6 = schedule.add_input(6_u32, ());
-    let h7 = schedule.add_input(7_u32, ());
-    let h8 = schedule.add_input(8_u32, ());
+    let h1 = schedule.add_input(1_u32);
+    let h2 = schedule.add_input(2_u32);
+    let h3 = schedule.add_input(3_u32);
+    let h4 = schedule.add_input(4_u32);
+    let h5 = schedule.add_input(5_u32);
+    let h6 = schedule.add_input(6_u32);
+    let h7 = schedule.add_input(7_u32);
+    let h8 = schedule.add_input(8_u32);
 
     let sum = schedule.add_closure(
-        |a, b, c, d, e, f, g, h| async move { Ok::<_, Box<dyn std::error::Error + Send + Sync>>(a + b + c + d + e + f + g + h) },
+        |a, b, c, d, e, f, g, h| async move {
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(a + b + c + d + e + f + g + h)
+        },
         (h1, h2, h3, h4, h5, h6, h7, h8),
-        (),
     )?;
 
     let mut executor = PolicyExecutor::fifo(schedule);
@@ -310,8 +313,8 @@ async fn independent_branch_can_succeed_even_if_other_branch_fails() -> eyre::Re
     taski::make_guard!(guard);
     let mut schedule = Schedule::new(guard);
 
-    let ok_handle = schedule.add_closure(ok_u32, (), ())?;
-    let fail_handle = schedule.add_closure(fail_u32, (), ())?;
+    let ok_handle = schedule.add_closure(ok_u32, ())?;
+    let fail_handle = schedule.add_closure(fail_u32, ())?;
 
     let mut executor = PolicyExecutor::fifo(schedule);
     let report = executor.run().await?;
@@ -320,8 +323,59 @@ async fn independent_branch_can_succeed_even_if_other_branch_fails() -> eyre::Re
     assert_eq!(report.succeeded_tasks, 1);
     assert_eq!(report.failed_tasks, 1);
 
-    assert_eq!(executor.execution().output_ref(ok_handle).copied(), Some(10));
+    assert_eq!(
+        executor.execution().output_ref(ok_handle).copied(),
+        Some(10)
+    );
     assert!(executor.execution().output_ref(fail_handle).is_none());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dependant_fails_if_dependency_fails() -> eyre::Result<()> {
+    taski::make_guard!(guard);
+    let mut schedule = Schedule::new(guard);
+
+    let input = schedule.add_input(1_i32);
+    let a = schedule.add_closure(fail_i32, (input,))?;
+    let b = schedule.add_closure(add_one_i32, (a,))?;
+
+    let mut executor = PolicyExecutor::fifo(schedule);
+    let report = executor.run().await?;
+
+    assert_eq!(report.total_tasks, 3);
+    assert_eq!(report.succeeded_tasks, 1);
+    assert_eq!(report.failed_tasks, 2);
+
+    assert!(executor.execution().state(a.task_id()).did_fail());
+    assert!(executor.execution().state(b.task_id()).did_fail());
+    assert!(executor.execution().output_ref(a).is_none());
+    assert!(executor.execution().output_ref(b).is_none());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dependant_fails_if_dependency_fails_and_failure_propagates() -> eyre::Result<()> {
+    taski::make_guard!(guard);
+    let mut schedule = Schedule::new(guard);
+
+    let input = schedule.add_input(1_i32);
+    let a = schedule.add_closure(fail_i32, (input,))?;
+    let b = schedule.add_closure(add_one_i32, (a,))?;
+
+    let mut executor = PolicyExecutor::fifo(schedule);
+    let report = executor.run().await?;
+
+    assert_eq!(report.total_tasks, 3);
+    assert_eq!(report.succeeded_tasks, 1);
+    assert_eq!(report.failed_tasks, 2);
+
+    assert!(executor.execution().state(a.task_id()).did_fail());
+    assert!(executor.execution().state(b.task_id()).did_fail());
+    assert!(executor.execution().output_ref(a).is_none());
+    assert!(executor.execution().output_ref(b).is_none());
 
     Ok(())
 }
@@ -331,9 +385,9 @@ async fn priority_runs_higher_labels_first_with_single_concurrency() -> eyre::Re
     taski::make_guard!(guard);
     let mut schedule = Schedule::new(guard);
 
-    let _t1 = schedule.add_closure(ok_unit, (), 1_u8)?;
-    let _t2 = schedule.add_closure(ok_unit, (), 3_u8)?;
-    let _t3 = schedule.add_closure(ok_unit, (), 2_u8)?;
+    let _t1 = schedule.add_closure_with_metadata(ok_unit, (), 1_u8)?;
+    let _t2 = schedule.add_closure_with_metadata(ok_unit, (), 3_u8)?;
+    let _t3 = schedule.add_closure_with_metadata(ok_unit, (), 2_u8)?;
 
     let mut executor = PolicyExecutor::priority(schedule).max_concurrent(Some(1));
     executor.run().await?;
@@ -342,7 +396,7 @@ async fn priority_runs_higher_labels_first_with_single_concurrency() -> eyre::Re
         .trace()
         .tasks
         .iter()
-        .map(|(task_id, _)| *executor.schedule().task_label(*task_id))
+        .map(|(task_id, _)| *executor.schedule().task_metadata(*task_id))
         .collect();
 
     assert_eq!(labels_in_trace, vec![3_u8, 2_u8, 1_u8]);
@@ -356,8 +410,8 @@ async fn started_and_completed_timestamps_exist_for_traced_tasks() -> eyre::Resu
     let mut schedule = Schedule::new(guard);
 
     let delay = Duration::from_millis(10);
-    let _t1 = schedule.add_closure(move || sleepy(1, delay), (), ())?;
-    let _t2 = schedule.add_closure(move || sleepy(2, delay), (), ())?;
+    let _t1 = schedule.add_closure(move || sleepy(1, delay), ())?;
+    let _t2 = schedule.add_closure(move || sleepy(2, delay), ())?;
 
     let mut executor = PolicyExecutor::fifo(schedule);
     executor.run().await?;
@@ -382,7 +436,7 @@ async fn started_and_completed_timestamps_exist_for_traced_tasks() -> eyre::Resu
 async fn stalled_when_policy_never_schedules_anything() -> eyre::Result<()> {
     taski::make_guard!(guard);
     let mut schedule = Schedule::new(guard);
-    let _input = schedule.add_input(1_u32, ());
+    let _input = schedule.add_input(1_u32);
 
     let mut executor = PolicyExecutor::custom(schedule, NeverPolicy);
 
@@ -394,7 +448,10 @@ async fn stalled_when_policy_never_schedules_anything() -> eyre::Result<()> {
     let taski::executor::RunError::Stalled {
         unfinished_tasks,
         pending_task_indices,
-    } = err;
+    } = err
+    else {
+        return Err(eyre::eyre!("expected stalled error"));
+    };
 
     assert_eq!(unfinished_tasks, 1);
     assert_eq!(pending_task_indices, vec![0]);
@@ -407,10 +464,10 @@ async fn output_ref_is_none_before_run_and_some_after_run() -> eyre::Result<()> 
     taski::make_guard!(guard);
     let mut schedule = Schedule::new(guard);
 
-    let one = schedule.add_input(1_i32, ());
-    let two = schedule.add_input(2_i32, ());
+    let one = schedule.add_input(1_i32);
+    let two = schedule.add_input(2_i32);
 
-    let three = schedule.add_closure(add_i32, (one, two), ())?;
+    let three = schedule.add_closure(add_i32, (one, two))?;
 
     let mut executor = PolicyExecutor::fifo(schedule);
     assert!(executor.execution().output_ref(three).is_none());
@@ -428,35 +485,11 @@ async fn output_ref_is_none_before_run_and_some_after_run() -> eyre::Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn dependant_fails_if_dependency_fails() -> eyre::Result<()> {
-    taski::make_guard!(guard);
-    let mut schedule = Schedule::new(guard);
-
-    let input = schedule.add_input(1_i32, ());
-    let a = schedule.add_closure(fail_i32, (input,), ())?;
-    let b = schedule.add_closure(add_one_i32, (a,), ())?;
-
-    let mut executor = PolicyExecutor::fifo(schedule);
-    let report = executor.run().await?;
-
-    assert_eq!(report.total_tasks, 3);
-    assert_eq!(report.succeeded_tasks, 1);
-    assert_eq!(report.failed_tasks, 2);
-
-    assert!(executor.execution().state(a.task_id()).did_fail());
-    assert!(executor.execution().state(b.task_id()).did_fail());
-    assert!(executor.execution().output_ref(a).is_none());
-    assert!(executor.execution().output_ref(b).is_none());
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stalled_when_max_concurrent_is_zero() -> eyre::Result<()> {
     taski::make_guard!(guard);
     let mut schedule = Schedule::new(guard);
 
-    let _input = schedule.add_input(1_u32, ());
+    let _input = schedule.add_input(1_u32);
 
     let mut executor = PolicyExecutor::fifo(schedule).max_concurrent(Some(0));
 
@@ -468,7 +501,10 @@ async fn stalled_when_max_concurrent_is_zero() -> eyre::Result<()> {
     let taski::executor::RunError::Stalled {
         unfinished_tasks,
         pending_task_indices,
-    } = err;
+    } = err
+    else {
+        return Err(eyre::eyre!("expected stalled error"));
+    };
 
     assert_eq!(unfinished_tasks, 1);
     assert_eq!(pending_task_indices, vec![0]);
@@ -483,9 +519,9 @@ async fn fifo_respects_max_concurrency() -> eyre::Result<()> {
 
     let delay = Duration::from_millis(30);
 
-    let _t1 = schedule.add_closure(move || sleepy(1, delay), (), ())?;
-    let _t2 = schedule.add_closure(move || sleepy(2, delay), (), ())?;
-    let _t3 = schedule.add_closure(move || sleepy(3, delay), (), ())?;
+    let _t1 = schedule.add_closure(move || sleepy(1, delay), ())?;
+    let _t2 = schedule.add_closure(move || sleepy(2, delay), ())?;
+    let _t3 = schedule.add_closure(move || sleepy(3, delay), ())?;
 
     let mut executor = PolicyExecutor::fifo(schedule).max_concurrent(Some(2));
     let report = executor.run().await?;
@@ -504,11 +540,10 @@ async fn schedule_ready_lists_tasks_without_dependencies() -> eyre::Result<()> {
     taski::make_guard!(guard);
     let mut schedule = Schedule::new(guard);
 
-    let one = schedule.add_input(1_i32, ());
-    let two = schedule.add_input(2_i32, ());
+    let one = schedule.add_input(1_i32);
+    let two = schedule.add_input(2_i32);
 
-    let _three = schedule
-        .add_closure(|lhs, rhs| async move { Ok(lhs + rhs) }, (one, two), ())?;
+    let _three = schedule.add_closure(|lhs, rhs| async move { Ok(lhs + rhs) }, (one, two))?;
 
     let executor = PolicyExecutor::fifo(schedule);
 

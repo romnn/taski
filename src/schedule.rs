@@ -1,7 +1,14 @@
 //! Schedule construction.
 //!
-//! A [`Schedule`] is a directed acyclic graph (DAG) of tasks. You add tasks via [`Schedule::add_node`]
-//! or [`Schedule::add_closure`] and connect them by passing typed dependency handles.
+//! A [`Schedule`] is a directed acyclic graph (DAG) of tasks.
+//!
+//! If you don't need per-node metadata, use `Schedule<'_, ()>` and add tasks via:
+//! - [`Schedule::add_input`]
+//! - [`Schedule::add_node`]
+//! - [`Schedule::add_closure`]
+//!
+//! If you do need metadata for custom policies or teardown coordination, use `Schedule<'_, L>`
+//! and add tasks via the corresponding `*_with_metadata` methods.
 //!
 //! Schedules are *branded* by a `generativity` guard (`'id`), which prevents mixing handles from
 //! different schedules.
@@ -17,7 +24,6 @@ use crate::{
 
 use futures::Future;
 use generativity::Guard;
-use std::any::Any;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
@@ -49,19 +55,13 @@ pub enum BuildError {
     MissingDependency,
 }
 
-pub(crate) type Fut<'id> =
-    Pin<
-        Box<
-            dyn Future<
-                    Output = (
-                        dag::TaskId<'id>,
-                        trace::Task,
-                        Result<Arc<dyn Any + Send + Sync>, task::Error>,
-                    ),
-                > + Send
-                + 'id,
-        >,
-    >;
+pub(crate) type TaskOutput<'id> = (
+    dag::TaskId<'id>,
+    trace::Task,
+    Result<Box<dyn std::any::Any + Send>, task::Error>,
+);
+
+pub(crate) type TaskOutputFut<'id> = Pin<Box<dyn Future<Output = TaskOutput<'id>> + 'id>>;
 
 /// Trait representing a schedulable task node.
 ///
@@ -127,13 +127,13 @@ pub trait Schedulable<'id, L: 'id>: Send + Sync + 'id {
     ///
     /// Users must not manually run the task before all
     /// dependencies have completed.
-    fn run(&self, execution: &Execution<'id>) -> Option<Fut<'id>>;
+    fn run(&self, execution: &Execution<'id>) -> Option<TaskOutputFut<'id>>;
 
     /// Returns the name of the schedulable task
     fn name(&self) -> &str;
 
-    /// Returns the label of this task.
-    fn label(&self) -> &L;
+    /// Returns the user-provided metadata of this task.
+    fn metadata(&self) -> &L;
 
     /// Returns the color of this task for rendering.
     fn color(&self) -> &Option<crate::render::Rgba>;
@@ -156,10 +156,7 @@ pub trait Schedulable<'id, L: 'id>: Send + Sync + 'id {
     ///
     /// If the task has not yet completed, `None` is returned.
     fn running_time(&self, execution: &Execution<'id>) -> Option<Duration> {
-        match (
-            self.started_at(execution),
-            self.completed_at(execution),
-        ) {
+        match (self.started_at(execution), self.completed_at(execution)) {
             (Some(s), Some(e)) => Some(e.duration_since(s)),
             _ => None,
         }
@@ -202,8 +199,9 @@ impl<'id, L: 'id> Eq for dyn Schedulable<'id, L> + '_ {}
 
 /// A task schedule based on a DAG of task nodes.
 ///
-/// The label type `L` is provided by the caller and can be used by policies (e.g. priority
-/// scheduling). If you do not need labels, use `()`.
+/// The metadata type `L` is provided by the caller and can be used by policies (e.g. priority
+/// scheduling) or higher-level orchestration (e.g. teardown planning). If you do not need
+/// metadata, use `()`.
 ///
 /// # Example
 ///
@@ -220,9 +218,9 @@ impl<'id, L: 'id> Eq for dyn Schedulable<'id, L> + '_ {}
 ///         make_guard!(guard);
 ///         let mut schedule: Schedule<'_, ()> = Schedule::new(guard);
 ///
-///         let one = schedule.add_input(1_i32, ());
-///         let two = schedule.add_input(2_i32, ());
-///         let three = schedule.add_closure(add, (one, two), ())?;
+///         let one = schedule.add_input(1_i32);
+///         let two = schedule.add_input(2_i32);
+///         let three = schedule.add_closure(add, (one, two))?;
 ///
 ///         let mut executor = PolicyExecutor::fifo(schedule);
 ///         executor.run().await?;
@@ -263,10 +261,82 @@ impl<'id, L: 'id> Schedule<'id, L> {
         dag::TaskId::new(self.schedule_id, idx)
     }
 
-    /// Add a task to the graph.
+    #[must_use]
+    pub fn task_ids_in_topological_order(&self) -> Vec<dag::TaskId<'id>> {
+        #[expect(clippy::expect_used, reason = "schedules are dags by construction")]
+        let nodes = pg::algo::toposort(&self.dag, None).expect("schedule is a dag");
+        nodes
+            .into_iter()
+            .map(|idx| dag::TaskId::new(self.schedule_id, idx))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn task_ids_in_reverse_topological_order(&self) -> Vec<dag::TaskId<'id>> {
+        let mut ids = self.task_ids_in_topological_order();
+        ids.reverse();
+        ids
+    }
+
+    #[must_use]
+    pub fn task_ids_in_reverse_topological_layers(&self) -> Vec<Vec<dag::TaskId<'id>>> {
+        let node_count = self.dag.node_count();
+        let mut remaining_dependant_counts = vec![0_usize; node_count];
+        for idx in self.dag.node_indices() {
+            remaining_dependant_counts[idx.index()] = self
+                .dag
+                .neighbors_directed(idx, pg::Direction::Outgoing)
+                .count();
+        }
+
+        let mut layers = Vec::new();
+        let mut processed_count = 0_usize;
+
+        let mut current: Vec<pg::graph::NodeIndex<usize>> = self
+            .dag
+            .node_indices()
+            .filter(|idx| remaining_dependant_counts[idx.index()] == 0)
+            .collect();
+        current.sort_by_key(|idx| idx.index());
+
+        while !current.is_empty() {
+            processed_count = processed_count.saturating_add(current.len());
+            layers.push(
+                current
+                    .iter()
+                    .copied()
+                    .map(|idx| dag::TaskId::new(self.schedule_id, idx))
+                    .collect(),
+            );
+
+            let mut next = Vec::new();
+            for idx in current {
+                for dependency_idx in self.dag.neighbors_directed(idx, pg::Direction::Incoming) {
+                    if let Some(remaining) =
+                        remaining_dependant_counts.get_mut(dependency_idx.index())
+                    {
+                        *remaining = remaining.saturating_sub(1);
+                        if *remaining == 0 {
+                            next.push(dependency_idx);
+                        }
+                    }
+                }
+            }
+
+            next.sort_by_key(|idx| idx.index());
+            current = next;
+        }
+
+        if processed_count != node_count {
+            return vec![self.task_ids_in_reverse_topological_order()];
+        }
+
+        layers
+    }
+
+    /// Add a task to the graph, attaching user-provided metadata.
     ///
-    /// A common `label` type may optionally be given to allow for custom
-    /// scheduling policies.
+    /// Metadata is optional user-provided data that can be used by scheduling policies.
     ///
     /// Dependencies for the task must be references to tasks that
     /// have already been added to the schedule and match the arguments
@@ -275,18 +345,18 @@ impl<'id, L: 'id> Schedule<'id, L> {
     /// # Errors
     /// - If a dependency belongs to a different schedule.
     /// - If a dependency is not contained in the schedule.
-    pub fn add_node<I, O, T, D>(
+    pub fn add_node_with_metadata<I, O, T, D>(
         &mut self,
         task: T,
         deps: D,
-        label: L,
+        metadata: L,
     ) -> Result<dag::Handle<'id, O>, BuildError>
     where
         T: task::Task<I, O> + Send + Sync + 'static,
         D: Dependencies<'id, I> + Send + Sync + 'id,
-        I: std::fmt::Debug + Send + Sync + 'static,
-        O: std::fmt::Debug + Send + Sync + 'static,
-        L: std::fmt::Debug + Send + Sync + 'static,
+        I: std::fmt::Debug + Send + 'static,
+        O: std::fmt::Debug + Send + 'static,
+        L: std::fmt::Debug + Send + Sync + 'id,
     {
         let index = dag::TaskId::new(self.schedule_id, dag::Idx::new(self.dag.node_count()));
         let dependency_task_ids = deps.task_ids();
@@ -299,7 +369,13 @@ impl<'id, L: 'id> Schedule<'id, L> {
             }
         }
 
-        let node = Arc::new(task::Node::new(task, deps, dependency_task_ids, label, index));
+        let node = Arc::new(task::Node::new(
+            task,
+            deps,
+            dependency_task_ids,
+            metadata,
+            index,
+        ));
         let node_index = self.dag.add_node(node.clone());
         if node_index != index.idx() {
             log::error!("node index mismatch");
@@ -313,15 +389,12 @@ impl<'id, L: 'id> Schedule<'id, L> {
         Ok(dag::Handle::new(index))
     }
 
-    /// Add a async closure to the graph.
+    /// Add an async closure to the graph, attaching user-provided metadata.
     ///
     /// Using closures rather than tasks (`Task1`, `Task2` etc.) is more convenient
     /// for smaller functions, but not as powerful.
     /// In comparison, implementing the `Task` family of traits allows using a
     /// custom `name` (rather than `std::fmt::Debug`) and `color` for rendering.
-    ///
-    /// A common `label` type may optionally be given to allow for custom
-    /// scheduling policies.
     ///
     /// Dependencies for the task must be references to tasks that
     /// have already been added to the schedule and match the arguments
@@ -330,18 +403,19 @@ impl<'id, L: 'id> Schedule<'id, L> {
     /// # Errors
     /// - If a dependency belongs to a different schedule.
     /// - If a dependency is not contained in the schedule.
-    pub fn add_closure<C, I, O, D>(
+    pub fn add_closure_with_metadata<C, I, O, D>(
         &mut self,
         closure: C,
         deps: D,
-        label: L,
+        metadata: L,
     ) -> Result<dag::Handle<'id, O>, BuildError>
     where
         C: task::Closure<I, O> + Send + Sync + 'static,
         D: Dependencies<'id, I> + Send + Sync + 'id,
-        I: std::fmt::Debug + Send + Sync + 'static,
-        O: std::fmt::Debug + Send + Sync + 'static,
-        L: std::fmt::Debug + Send + Sync + 'static,
+        // I: Send + 'static,
+        I: std::fmt::Debug + Send + 'static,
+        O: std::fmt::Debug + Send + 'static,
+        L: std::fmt::Debug + Send + Sync + 'id,
     {
         let index = dag::TaskId::new(self.schedule_id, dag::Idx::new(self.dag.node_count()));
         let closure = Box::new(closure);
@@ -359,7 +433,7 @@ impl<'id, L: 'id> Schedule<'id, L> {
             closure,
             deps,
             dependency_task_ids,
-            label,
+            metadata,
             index,
         ));
         let node_index = self.dag.add_node(node.clone());
@@ -372,17 +446,15 @@ impl<'id, L: 'id> Schedule<'id, L> {
         Ok(dag::Handle::new(index))
     }
 
-    /// Add an input value without any dependencies to be used by other tasks.
-    ///
-    /// A common `label` type may optionally be given to allow for custom
-    /// scheduling policies.
-    pub fn add_input<O>(&mut self, input: O, label: L) -> dag::Handle<'id, O>
+    /// Add an input value without any dependencies to be used by other tasks,
+    /// attaching user-provided metadata.
+    pub fn add_input_with_metadata<O>(&mut self, input: O, metadata: L) -> dag::Handle<'id, O>
     where
         O: std::fmt::Debug + Send + Sync + 'static,
-        L: std::fmt::Debug + Send + Sync + 'static,
+        L: std::fmt::Debug + Send + Sync + 'id,
     {
         #[expect(clippy::expect_used, reason = "inputs cannot have dependencies")]
-        self.add_node(task::Input::from(input), (), label)
+        self.add_node_with_metadata(task::Input::from(input), (), metadata)
             .expect("add input")
     }
 
@@ -463,15 +535,72 @@ impl<'id, L: 'id> Schedule<'id, L> {
         &self.dag[task_id.idx()]
     }
 
-    /// Returns the label associated with the given task.
+    /// Returns the metadata associated with the given task.
     #[must_use]
-    pub fn task_label(&self, task_id: dag::TaskId<'id>) -> &L {
-        self.task(task_id).label()
+    pub fn task_metadata(&self, task_id: dag::TaskId<'id>) -> &L {
+        self.task(task_id).metadata()
     }
 
     /// Returns the state of a task in the given execution.
     #[must_use]
     pub fn task_state(&self, execution: &Execution<'id>, task_id: dag::TaskId<'id>) -> task::State {
         self.task(task_id).state(execution)
+    }
+}
+
+impl<'id> Schedule<'id, ()> {
+    /// Add a task to the graph.
+    ///
+    /// This is a convenience wrapper around [`Self::add_node_with_metadata`] that uses `()` as the
+    /// default metadata.
+    ///
+    /// # Errors
+    /// - If a dependency belongs to a different schedule.
+    /// - If a dependency is not contained in the schedule.
+    pub fn add_node<I, O, T, D>(
+        &mut self,
+        task: T,
+        deps: D,
+    ) -> Result<dag::Handle<'id, O>, BuildError>
+    where
+        T: task::Task<I, O> + Send + Sync + 'static,
+        D: Dependencies<'id, I> + Send + Sync + 'id,
+        I: std::fmt::Debug + Send + 'static,
+        O: std::fmt::Debug + Send + 'static,
+    {
+        self.add_node_with_metadata(task, deps, ())
+    }
+
+    /// Add an async closure to the graph.
+    ///
+    /// This is a convenience wrapper around [`Self::add_closure_with_metadata`] that uses `()` as
+    /// the default metadata.
+    ///
+    /// # Errors
+    /// - If a dependency belongs to a different schedule.
+    /// - If a dependency is not contained in the schedule.
+    pub fn add_closure<C, I, O, D>(
+        &mut self,
+        closure: C,
+        deps: D,
+    ) -> Result<dag::Handle<'id, O>, BuildError>
+    where
+        C: task::Closure<I, O> + Send + Sync + 'static,
+        D: Dependencies<'id, I> + Send + Sync + 'id,
+        I: std::fmt::Debug + Send + 'static,
+        O: std::fmt::Debug + Send + 'static,
+    {
+        self.add_closure_with_metadata(closure, deps, ())
+    }
+
+    /// Add an input value without any dependencies to be used by other tasks.
+    ///
+    /// This is a convenience wrapper around [`Self::add_input_with_metadata`] that uses `()` as the
+    /// default metadata.
+    pub fn add_input<O>(&mut self, input: O) -> dag::Handle<'id, O>
+    where
+        O: std::fmt::Debug + Send + Sync + 'static,
+    {
+        self.add_input_with_metadata(input, ())
     }
 }

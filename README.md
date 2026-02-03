@@ -43,11 +43,11 @@ async fn main() -> Result<(), taski::schedule::BuildError> {
     taski::make_guard!(guard);
     let mut schedule = Schedule::new(guard);
 
-    let one = schedule.add_input(1, ());
-    let two = schedule.add_input(2, ());
+    let one = schedule.add_input(1);
+    let two = schedule.add_input(2);
 
     // `Sum` takes (i32, i32) and produces i32.
-    let three = schedule.add_node(Sum, (one, two), ())?;
+    let three = schedule.add_node(Sum, (one, two))?;
 
     let mut executor = PolicyExecutor::fifo(schedule);
     executor.run().await.ok();
@@ -65,7 +65,7 @@ You can also use `Schedule::add_closure(...)` to attach async closures or `async
 
 - **Typed dependencies.** Dependencies are expressed as tuples of previous nodes (e.g. `(a, b)`), and their outputs become the task input.
 - **Async-first execution.** Tasks are `async` and executed using `futures::stream::FuturesUnordered`.
-- **Pluggable scheduling policy.** Implement `taski::Policy<L>` to decide what to run next (FIFO, priority-by-label, custom constraints).
+- **Pluggable scheduling policy.** Implement `taski::Policy<L>` to decide what to run next (FIFO, priority-by-metadata, custom constraints).
 - **Configurable concurrency.** Built-in policies support a `max_concurrent` limit.
 - **Tracing (and optional rendering).** The executor records a `Trace` (start/end times) and can be rendered to SVG with the `render` feature.
 
@@ -75,12 +75,24 @@ You can also use `Schedule::add_closure(...)` to attach async closures or `async
 
 `Schedule<L>` is the DAG of tasks.
 
-- You add nodes via:
-  - `Schedule::add_input(value, label)` for a constant value node.
-  - `Schedule::add_node(task, deps, label)` for a typed task.
-  - `Schedule::add_closure(closure, deps, label)` for an async closure or `async fn`.
+If you don't need per-node metadata, use `Schedule<()>` and the `add_*` methods.
 
-The `label` (`L`) is user-defined metadata attached to each task node. Labels are intentionally part of the core design because they enable powerful policies (priority, resource pools, per-label concurrency, etc.).
+If you do need metadata (for custom scheduling policies or teardown coordination), use
+`Schedule<L>` and the corresponding `*_with_metadata` methods.
+
+- You add nodes via:
+  - `Schedule::add_input(value)` for a constant value node.
+  - `Schedule::add_node(task, deps)` for a typed task.
+  - `Schedule::add_closure(closure, deps)` for an async closure or `async fn`.
+
+  And (when using non-unit metadata):
+  - `Schedule::add_input_with_metadata(value, metadata)`
+  - `Schedule::add_node_with_metadata(task, deps, metadata)`
+  - `Schedule::add_closure_with_metadata(closure, deps, metadata)`
+
+The metadata (`L`) is user-defined data attached to each task node. It is intentionally part of the
+core design because it enables powerful policies (priority, resource pools, per-metadata
+concurrency, etc.) and higher-level orchestration (like teardown planning).
 
 ### Tasks: `Task0` … `Task8`
 
@@ -105,7 +117,7 @@ Nodes returned by `add_input`/`add_node`/`add_closure` return a typed `Handle<'i
 The executor is intentionally separate from the schedule.
 
 - `PolicyExecutor::fifo(schedule)` runs ready tasks in insertion order.
-- `PolicyExecutor::priority(schedule)` runs the task with the highest label first (requires `L: Ord`).
+- `PolicyExecutor::priority(schedule)` runs the task with the highest metadata first (requires `L: Ord`).
 - `PolicyExecutor::custom(schedule, policy)` runs with any custom policy implementation.
 
 ### Policies

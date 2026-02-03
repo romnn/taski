@@ -14,12 +14,12 @@
 /// let mut a: Schedule<'_, ()> = Schedule::new(guard_a);
 /// let mut b: Schedule<'_, ()> = Schedule::new(guard_b);
 ///
-/// let a1 = a.add_input(1_u32, ());
+/// let a1 = a.add_input(1_u32);
 ///
 /// async fn add_one(input: u32) -> TaskResult<u32> { Ok(input + 1) }
 ///
 /// // This must not compile because `a1` belongs to a different schedule lifetime.
-/// let _ = b.add_closure(add_one, (a1,), ());
+/// let _ = b.add_closure(add_one, (a1,));
 /// ```
 ///
 /// # Can’t construct `TaskId` from user code
@@ -43,7 +43,7 @@
 /// taski::make_guard!(guard);
 /// let mut schedule = Schedule::new(guard);
 ///
-/// let handle = schedule.add_input(1_u32, ());
+/// let handle = schedule.add_input(1_u32);
 ///
 /// let mut executor = PolicyExecutor::fifo(schedule);
 /// let _: Option<&String> = executor.execution().output_ref(handle);
@@ -60,10 +60,10 @@
 /// taski::make_guard!(guard);
 /// let schedule: Schedule<'_, ()> = Schedule::new(guard);
 /// let mut executor = PolicyExecutor::fifo(schedule);
-/// executor.schedule().add_input(1_u32, ());
+/// executor.schedule().add_input(1_u32);
 /// ```
 ///
-/// # Priority scheduling requires an `Ord` label
+/// # Priority scheduling requires `Ord` metadata
 ///
 /// ```compile_fail
 /// use taski::{PolicyExecutor, Schedule};
@@ -90,10 +90,10 @@
 /// taski::make_guard!(guard);
 /// let mut schedule: Schedule<'_, ()> = Schedule::new(guard);
 ///
-/// let h = schedule.add_input(NotClone, ());
+/// let h = schedule.add_input(NotClone);
 ///
 /// async fn consume(_v: NotClone) -> TaskResult<()> { Ok(()) }
 ///
-/// let _ = schedule.add_closure(consume, (h,), ());
+/// let _ = schedule.add_closure(consume, (h,));
 /// ```
 pub struct CompileFailTests;

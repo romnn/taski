@@ -27,13 +27,13 @@ pub async fn run(options: Options) -> eyre::Result<()> {
 
     taski::make_guard!(guard);
     let mut graph = taski::Schedule::new(guard);
-    let i1 = graph.add_input((first_url, "audio1.mp3".to_string()), Label::Input);
-    let i2 = graph.add_input((second_url, "audio2.mp3".to_string()), Label::Input);
+    let i1 = graph.add_input_with_metadata((first_url, "audio1.mp3".to_string()), Label::Input);
+    let i2 = graph.add_input_with_metadata((second_url, "audio2.mp3".to_string()), Label::Input);
 
-    let d1 = graph.add_node(download.clone(), (i1,), Label::Download)?;
-    let d2 = graph.add_node(download.clone(), (i2,), Label::Download)?;
+    let d1 = graph.add_node_with_metadata(download.clone(), (i1,), Label::Download)?;
+    let d2 = graph.add_node_with_metadata(download.clone(), (i2,), Label::Download)?;
 
-    let result = graph.add_node(combine, (d1, d2), Label::Combine)?;
+    let result = graph.add_node_with_metadata(combine, (d1, d2), Label::Combine)?;
 
     let mut executor = PolicyExecutor::fifo(graph);
 

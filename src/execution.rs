@@ -9,8 +9,7 @@
 use crate::{dag, task};
 
 use std::any::Any;
-use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Per-task execution data.
 #[derive(Debug)]
@@ -22,7 +21,7 @@ pub struct TaskExecution {
     /// When the task completed (if ever).
     pub completed_at: Option<Instant>,
     /// Output produced by a successful task.
-    pub output: Option<Arc<dyn Any + Send + Sync>>,
+    pub output: Option<Box<dyn Any + Send>>,
     /// Error produced by a failed task.
     pub error: Option<task::Error>,
 }
@@ -49,6 +48,7 @@ impl Default for TaskExecution {
 pub struct Execution<'id> {
     schedule_id: u64,
     tasks: Vec<TaskExecution>,
+    task_timeouts: Vec<Option<Duration>>,
     running_count: usize,
     unfinished_count: usize,
     _phantom: std::marker::PhantomData<fn(&'id ()) -> &'id ()>,
@@ -60,10 +60,42 @@ impl<'id> Execution<'id> {
         Self {
             schedule_id,
             tasks: (0..task_count).map(|_| TaskExecution::default()).collect(),
+            task_timeouts: (0..task_count).map(|_| None).collect(),
             running_count: 0,
             unfinished_count: task_count,
             _phantom: std::marker::PhantomData,
         }
+    }
+
+    pub(crate) fn task_timeout(&self, task_id: dag::TaskId<'id>) -> Option<Duration> {
+        if !self.validate_task_id(task_id) {
+            return None;
+        }
+
+        self.task_timeouts
+            .get(task_id.idx().index())
+            .copied()
+            .flatten()
+    }
+
+    pub fn set_task_timeout(&mut self, task_id: dag::TaskId<'id>, timeout: Option<Duration>) {
+        if !self.validate_task_id(task_id) {
+            return;
+        }
+
+        let Some(slot) = self.task_timeouts.get_mut(task_id.idx().index()) else {
+            log::error!("invalid task id");
+            return;
+        };
+        *slot = timeout;
+    }
+
+    pub fn set_task_timeout_handle<O: 'static>(
+        &mut self,
+        handle: dag::Handle<'id, O>,
+        timeout: Option<Duration>,
+    ) {
+        self.set_task_timeout(handle.task_id(), timeout);
     }
 
     fn validate_task_id(&self, task_id: dag::TaskId<'id>) -> bool {
@@ -99,7 +131,7 @@ impl<'id> Execution<'id> {
         &mut self,
         task_id: dag::TaskId<'id>,
         now: Instant,
-        output: Arc<dyn Any + Send + Sync>,
+        output: Box<dyn Any + Send>,
     ) {
         if !self.validate_task_id(task_id) {
             return;
@@ -122,7 +154,12 @@ impl<'id> Execution<'id> {
         task.state = task::State::Succeeded;
     }
 
-    pub(crate) fn mark_failed(&mut self, task_id: dag::TaskId<'id>, now: Instant, err: task::Error) {
+    pub(crate) fn mark_failed(
+        &mut self,
+        task_id: dag::TaskId<'id>,
+        now: Instant,
+        err: task::Error,
+    ) {
         if !self.validate_task_id(task_id) {
             return;
         }
@@ -180,11 +217,44 @@ impl<'id> Execution<'id> {
     }
 
     #[must_use]
+    pub(crate) fn take_output_task_id<O: 'static>(
+        &mut self,
+        task_id: dag::TaskId<'id>,
+    ) -> Option<O> {
+        if !self.validate_task_id(task_id) {
+            return None;
+        }
+        let task = self.tasks.get_mut(task_id.idx().index())?;
+        let output = task.output.take()?;
+        match output.downcast::<O>() {
+            Ok(output) => Some(*output),
+            Err(output) => {
+                task.output = Some(output);
+                None
+            }
+        }
+    }
+
     /// Returns a typed reference to a task output.
     ///
     /// Returns `None` if the task has not completed successfully or if the type does not match.
+    #[must_use]
     pub fn output_ref<O: 'static>(&self, handle: dag::Handle<'id, O>) -> Option<&O> {
         self.output_ref_task_id::<O>(handle.task_id())
+    }
+
+    #[must_use]
+    pub fn take_output<O: 'static>(&mut self, handle: dag::Handle<'id, O>) -> Option<O> {
+        self.take_output_task_id::<O>(handle.task_id())
+    }
+
+    #[must_use]
+    pub fn take_output_dyn(&mut self, task_id: dag::TaskId<'id>) -> Option<Box<dyn Any + Send>> {
+        if !self.validate_task_id(task_id) {
+            return None;
+        }
+        let task = self.tasks.get_mut(task_id.idx().index())?;
+        task.output.take()
     }
 
     /// Returns the time the task started, if known.

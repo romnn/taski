@@ -71,7 +71,11 @@ where
 
 // three dependencies
 impl<'id, T1, T2, T3> Dependencies<'id, (T1, T2, T3)>
-    for (dag::Handle<'id, T1>, dag::Handle<'id, T2>, dag::Handle<'id, T3>)
+    for (
+        dag::Handle<'id, T1>,
+        dag::Handle<'id, T2>,
+        dag::Handle<'id, T3>,
+    )
 where
     T1: Clone + 'static,
     T2: Clone + 'static,
@@ -247,8 +251,7 @@ where
 }
 
 // eight dependencies
-impl<'id, T1, T2, T3, T4, T5, T6, T7, T8>
-    Dependencies<'id, (T1, T2, T3, T4, T5, T6, T7, T8)>
+impl<'id, T1, T2, T3, T4, T5, T6, T7, T8> Dependencies<'id, (T1, T2, T3, T4, T5, T6, T7, T8)>
     for (
         dag::Handle<'id, T1>,
         dag::Handle<'id, T2>,
@@ -282,10 +285,7 @@ where
         ]
     }
 
-    fn inputs(
-        &self,
-        execution: &Execution<'id>,
-    ) -> Option<(T1, T2, T3, T4, T5, T6, T7, T8)> {
+    fn inputs(&self, execution: &Execution<'id>) -> Option<(T1, T2, T3, T4, T5, T6, T7, T8)> {
         let (i1, i2, i3, i4, i5, i6, i7, i8) = self;
         let i1 = execution.output_ref(*i1)?.clone();
         let i2 = execution.output_ref(*i2)?.clone();

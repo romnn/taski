@@ -5,7 +5,7 @@
 //!
 //! This crate provides two basic policies:
 //! - [`Fifo`]: executes tasks in FIFO order.
-//! - [`Priority`]: executes tasks in descending label order (ties broken by readiness order).
+//! - [`Priority`]: executes tasks in descending metadata order (ties broken by readiness order).
 
 use crate::{dag, execution::Execution, schedule::Schedule, task};
 
@@ -103,9 +103,10 @@ impl<'id, L: 'id> Policy<'id, L> for Fifo {
         execution: &Execution<'id>,
     ) -> Option<dag::TaskId<'id>> {
         if let Some(limit) = self.max_concurrent
-            && execution.running_count() >= limit {
-                return None;
-            }
+            && execution.running_count() >= limit
+        {
+            return None;
+        }
 
         while let Some(task_idx) = self.ready.pop_front() {
             let task_id = schedule.task_id(task_idx);
@@ -119,7 +120,7 @@ impl<'id, L: 'id> Policy<'id, L> for Fifo {
 
 /// Priority scheduling policy.
 ///
-/// Tasks are executed in descending label order (ties are broken by readiness order).
+/// Tasks are executed in descending metadata order (ties are broken by readiness order).
 #[derive(Debug, Default, Clone)]
 pub struct Priority {
     /// Optional concurrency limit enforced by the policy.
@@ -178,9 +179,10 @@ where
         execution: &Execution<'id>,
     ) -> Option<dag::TaskId<'id>> {
         if let Some(limit) = self.max_concurrent
-            && execution.running_count() >= limit {
-                return None;
-            }
+            && execution.running_count() >= limit
+        {
+            return None;
+        }
 
         let mut best: Option<(usize, &L)> = None;
         for (idx, &task_idx) in self.ready.iter().enumerate() {
@@ -189,12 +191,12 @@ where
                 continue;
             }
 
-            let label = schedule.task_label(task_id);
+            let metadata = schedule.task_metadata(task_id);
             match best {
-                None => best = Some((idx, label)),
+                None => best = Some((idx, metadata)),
                 Some((best_idx, best_label)) => {
-                    if label > best_label || (label == best_label && idx > best_idx) {
-                        best = Some((idx, label));
+                    if metadata > best_label || (metadata == best_label && idx > best_idx) {
+                        best = Some((idx, metadata));
                     }
                 }
             }
