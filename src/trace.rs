@@ -4,7 +4,9 @@
 //!
 //! When the `render` feature is enabled, traces can also be rendered as SVG.
 
+use crate::dag;
 use std::time::{Duration, Instant};
+use tracing::{Level, Span};
 
 /// A traced task.
 #[derive(Debug, Clone, PartialEq)]
@@ -153,5 +155,245 @@ impl<T> Trace<T> {
             .map(|concurrent| concurrent.len())
             .max()
             .unwrap_or_default()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TaskContext<'id, L> {
+    pub task_id: dag::TaskId<'id>,
+    pub task: crate::task::Ref<'id, L>,
+    pub timeout: Option<Duration>,
+}
+
+impl<'id, L> TaskContext<'id, L> {
+    #[must_use]
+    pub fn task_name(&self) -> &str {
+        self.task.name()
+    }
+
+    #[must_use]
+    pub fn metadata(&self) -> &L {
+        self.task.metadata()
+    }
+
+    #[must_use]
+    pub fn dependencies(&self) -> &[dag::TaskId<'id>] {
+        self.task.dependencies()
+    }
+
+    #[must_use]
+    pub fn timeout(&self) -> Option<Duration> {
+        self.timeout
+    }
+
+    #[cfg(feature = "render")]
+    #[must_use]
+    pub fn color(&self) -> &Option<crate::render::Rgba> {
+        self.task.color()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum TaskResultKind<'a> {
+    Succeeded,
+    TimedOut { timeout: Duration },
+    Failed { err: &'a crate::task::Error },
+}
+
+pub trait MakeSpan<'id, L>: Clone + Send + Sync + 'id {
+    fn make_span(&mut self, task: &TaskContext<'id, L>) -> Span;
+}
+
+pub trait OnTaskStart<'id, L>: Clone + Send + Sync + 'id {
+    fn on_start(&mut self, task: &TaskContext<'id, L>, span: &Span);
+}
+
+pub trait OnTaskResult<'id, L>: Clone + Send + Sync + 'id {
+    fn on_result(&mut self, task: &TaskContext<'id, L>, result: TaskResultKind<'_>, span: &Span);
+}
+
+pub trait TaskTrace<'id, L>: Clone + Send + Sync + 'id {
+    fn make_span(&mut self, task: &TaskContext<'id, L>) -> Span;
+    fn on_start(&mut self, task: &TaskContext<'id, L>, span: &Span);
+    fn on_result(&mut self, task: &TaskContext<'id, L>, result: TaskResultKind<'_>, span: &Span);
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NoopOnTaskStart;
+
+impl<'id, L> OnTaskStart<'id, L> for NoopOnTaskStart {
+    fn on_start(&mut self, _task: &TaskContext<'id, L>, _span: &Span) {}
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NoopOnTaskResult;
+
+impl<'id, L> OnTaskResult<'id, L> for NoopOnTaskResult {
+    fn on_result(
+        &mut self,
+        _task: &TaskContext<'id, L>,
+        _result: TaskResultKind<'_>,
+        _span: &Span,
+    ) {
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NoopMakeSpan;
+
+impl<'id, L> MakeSpan<'id, L> for NoopMakeSpan {
+    fn make_span(&mut self, _task: &TaskContext<'id, L>) -> Span {
+        Span::none()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DefaultMakeSpan {
+    level: Level,
+}
+
+impl Default for DefaultMakeSpan {
+    fn default() -> Self {
+        Self {
+            level: Level::TRACE,
+        }
+    }
+}
+
+impl DefaultMakeSpan {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn level(mut self, level: Level) -> Self {
+        self.level = level;
+        self
+    }
+}
+
+impl<'id, L> MakeSpan<'id, L> for DefaultMakeSpan
+where
+    L: 'id,
+{
+    fn make_span(&mut self, task: &TaskContext<'id, L>) -> Span {
+        let task_index = task.task_id.idx().index();
+        let task_name = task.task_name();
+        let otel_name = format!("taski::{task_name}");
+
+        macro_rules! make_span {
+            ($level:expr) => {{
+                tracing::span!(
+                    $level,
+                    "taski.task",
+                    task_index,
+                    task_name = %task_name,
+                    {"perfetto.track_name"} = %task_name,
+                    {"otel.name"} = %otel_name
+                )
+            }};
+        }
+
+        match self.level {
+            Level::ERROR => make_span!(Level::ERROR),
+            Level::WARN => make_span!(Level::WARN),
+            Level::INFO => make_span!(Level::INFO),
+            Level::DEBUG => make_span!(Level::DEBUG),
+            Level::TRACE => make_span!(Level::TRACE),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskTraceLayer<M, S, R> {
+    make_span: M,
+    on_start: S,
+    on_result: R,
+}
+
+pub type DefaultTaskTraceLayer = TaskTraceLayer<DefaultMakeSpan, NoopOnTaskStart, NoopOnTaskResult>;
+pub type NoopTaskTraceLayer = TaskTraceLayer<NoopMakeSpan, NoopOnTaskStart, NoopOnTaskResult>;
+
+impl Default for DefaultTaskTraceLayer {
+    fn default() -> Self {
+        Self {
+            make_span: DefaultMakeSpan::default(),
+            on_start: NoopOnTaskStart,
+            on_result: NoopOnTaskResult,
+        }
+    }
+}
+
+impl Default for NoopTaskTraceLayer {
+    fn default() -> Self {
+        Self {
+            make_span: NoopMakeSpan,
+            on_start: NoopOnTaskStart,
+            on_result: NoopOnTaskResult,
+        }
+    }
+}
+
+impl DefaultTaskTraceLayer {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl NoopTaskTraceLayer {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl<M, S, R> TaskTraceLayer<M, S, R> {
+    #[must_use]
+    pub fn make_span<M2>(self, make_span: M2) -> TaskTraceLayer<M2, S, R> {
+        TaskTraceLayer {
+            make_span,
+            on_start: self.on_start,
+            on_result: self.on_result,
+        }
+    }
+
+    #[must_use]
+    pub fn on_start<S2>(self, on_start: S2) -> TaskTraceLayer<M, S2, R> {
+        TaskTraceLayer {
+            make_span: self.make_span,
+            on_start,
+            on_result: self.on_result,
+        }
+    }
+
+    #[must_use]
+    pub fn on_result<R2>(self, on_result: R2) -> TaskTraceLayer<M, S, R2> {
+        TaskTraceLayer {
+            make_span: self.make_span,
+            on_start: self.on_start,
+            on_result,
+        }
+    }
+}
+
+impl<'id, L, M, S, R> TaskTrace<'id, L> for TaskTraceLayer<M, S, R>
+where
+    L: 'id,
+    M: MakeSpan<'id, L>,
+    S: OnTaskStart<'id, L>,
+    R: OnTaskResult<'id, L>,
+{
+    fn make_span(&mut self, task: &TaskContext<'id, L>) -> Span {
+        self.make_span.make_span(task)
+    }
+
+    fn on_start(&mut self, task: &TaskContext<'id, L>, span: &Span) {
+        self.on_start.on_start(task, span);
+    }
+
+    fn on_result(&mut self, task: &TaskContext<'id, L>, result: TaskResultKind<'_>, span: &Span) {
+        self.on_result.on_result(task, result, span);
     }
 }

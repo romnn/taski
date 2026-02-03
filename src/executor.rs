@@ -8,7 +8,9 @@
 
 use crate::{dag, execution::Execution, policy, schedule, schedule::Schedule, task, trace};
 
+use std::sync::Arc;
 use std::time::Duration;
+use tracing::Instrument;
 
 /// A report of a schedule execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,15 +71,30 @@ pub enum TimeoutError {
 /// - [`PolicyExecutor::fifo`]
 /// - [`PolicyExecutor::priority`]
 /// - [`PolicyExecutor::custom`]
-#[derive(Debug)]
 #[allow(clippy::module_name_repetitions)]
-pub struct PolicyExecutor<'id, P, L> {
+pub struct PolicyExecutor<'id, P, L, TTrace = trace::DefaultTaskTraceLayer> {
     schedule_id: u64,
     schedule: Schedule<'id, L>,
     execution: Execution<'id>,
     policy: P,
     trace: trace::Trace<dag::TaskId<'id>>,
     timeout: Option<Duration>,
+    task_trace: TTrace,
+}
+
+impl<P, L, TTrace> std::fmt::Debug for PolicyExecutor<'_, P, L, TTrace>
+where
+    P: std::fmt::Debug,
+    L: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PolicyExecutor")
+            .field("schedule_id", &self.schedule_id)
+            .field("policy", &self.policy)
+            .field("trace", &self.trace)
+            .field("timeout", &self.timeout)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'id, P, L> PolicyExecutor<'id, P, L>
@@ -86,7 +103,7 @@ where
 {
     /// Creates a new executor with a custom policy.
     #[must_use]
-    pub fn custom(schedule: Schedule<'id, L>, policy: P) -> Self {
+    pub fn new(schedule: Schedule<'id, L>, policy: P) -> Self {
         let schedule_id = schedule.schedule_id();
         let execution = Execution::new(schedule_id, schedule.dag.node_count());
         Self {
@@ -96,7 +113,26 @@ where
             policy,
             trace: trace::Trace::new(),
             timeout: None,
+            task_trace: trace::DefaultTaskTraceLayer::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_task_trace<TTrace>(self, task_trace: TTrace) -> PolicyExecutor<'id, P, L, TTrace> {
+        PolicyExecutor {
+            schedule_id: self.schedule_id,
+            schedule: self.schedule,
+            execution: self.execution,
+            policy: self.policy,
+            trace: self.trace,
+            timeout: self.timeout,
+            task_trace,
+        }
+    }
+
+    #[must_use]
+    pub fn with_trace<TTrace>(self, task_trace: TTrace) -> PolicyExecutor<'id, P, L, TTrace> {
+        self.with_task_trace(task_trace)
     }
 
     /// Sets an optional timeout for the entire execution.
@@ -176,6 +212,7 @@ where
             trace: trace::Trace::new(),
             policy: policy::Fifo::default(),
             timeout: None,
+            task_trace: trace::DefaultTaskTraceLayer::new(),
         }
     }
 
@@ -205,6 +242,7 @@ where
             trace: trace::Trace::new(),
             policy: policy::Priority::default(),
             timeout: None,
+            task_trace: trace::DefaultTaskTraceLayer::new(),
         }
     }
 
@@ -216,10 +254,11 @@ where
     }
 }
 
-impl<'id, P, L> PolicyExecutor<'id, P, L>
+impl<'id, P, L, TTrace> PolicyExecutor<'id, P, L, TTrace>
 where
     P: policy::Policy<'id, L>,
     L: 'id,
+    TTrace: trace::TaskTrace<'id, L>,
 {
     /// Runs the tasks in the graph.
     ///
@@ -269,7 +308,17 @@ where
                 running_task_ids.push(task_id);
 
                 if let Some(task_fut) = task.run(&self.execution) {
+                    let mut task_trace = self.task_trace.clone();
                     let task_timeout = self.execution.task_timeout(task_id);
+                    let task_context = trace::TaskContext {
+                        task_id,
+                        task: Arc::clone(task),
+                        timeout: task_timeout,
+                    };
+
+                    let span = task_trace.make_span(&task_context);
+                    task_trace.on_start(&task_context, &span);
+
                     if let Some(task_timeout) = task_timeout {
                         let label = task.to_string();
                         #[cfg(feature = "render")]
@@ -279,32 +328,82 @@ where
                             .started_at(task_id)
                             .unwrap_or_else(Instant::now);
                         let timeout_fut = futures_timer::Delay::new(task_timeout);
-                        let task_fut: schedule::TaskOutputFut<'id> = Box::pin(async move {
-                            futures::pin_mut!(task_fut);
-                            futures::pin_mut!(timeout_fut);
-                            match futures::future::select(task_fut, timeout_fut).await {
-                                futures::future::Either::Left((output, _)) => output,
-                                futures::future::Either::Right(((), _)) => {
-                                    let end = Instant::now();
-                                    let traced = crate::trace::Task {
-                                        label,
-                                        #[cfg(feature = "render")]
-                                        color,
-                                        start,
-                                        end,
-                                    };
-                                    (
-                                        task_id,
-                                        traced,
-                                        Err(task::Error::new(TimeoutError::TaskTimedOut {
-                                            timeout: task_timeout,
-                                        })),
-                                    )
+                        let span_for_instrument = span.clone();
+                        let task_fut: schedule::TaskOutputFut<'id> = Box::pin(
+                            async move {
+                                futures::pin_mut!(task_fut);
+                                futures::pin_mut!(timeout_fut);
+
+                                match futures::future::select(task_fut, timeout_fut).await {
+                                    futures::future::Either::Left((output, _)) => {
+                                        match &output.2 {
+                                            Ok(_) => task_trace.on_result(
+                                                &task_context,
+                                                trace::TaskResultKind::Succeeded,
+                                                &span,
+                                            ),
+                                            Err(err) => task_trace.on_result(
+                                                &task_context,
+                                                trace::TaskResultKind::Failed { err },
+                                                &span,
+                                            ),
+                                        }
+                                        output
+                                    }
+                                    futures::future::Either::Right(((), _)) => {
+                                        let end = Instant::now();
+                                        let traced = crate::trace::Task {
+                                            label,
+                                            #[cfg(feature = "render")]
+                                            color,
+                                            start,
+                                            end,
+                                        };
+                                        let output = (
+                                            task_id,
+                                            traced,
+                                            Err(task::Error::new(TimeoutError::TaskTimedOut {
+                                                timeout: task_timeout,
+                                            })),
+                                        );
+
+                                        task_trace.on_result(
+                                            &task_context,
+                                            trace::TaskResultKind::TimedOut {
+                                                timeout: task_timeout,
+                                            },
+                                            &span,
+                                        );
+
+                                        output
+                                    }
                                 }
                             }
-                        });
+                            .instrument(span_for_instrument),
+                        );
                         running_tasks.push(task_fut);
                     } else {
+                        let span_for_instrument = span.clone();
+                        let task_fut = Box::pin(
+                            async move {
+                                let output = task_fut.await;
+                                match &output.2 {
+                                    Ok(_) => task_trace.on_result(
+                                        &task_context,
+                                        trace::TaskResultKind::Succeeded,
+                                        &span,
+                                    ),
+                                    Err(err) => task_trace.on_result(
+                                        &task_context,
+                                        trace::TaskResultKind::Failed { err },
+                                        &span,
+                                    ),
+                                }
+                                output
+                            }
+                            .instrument(span_for_instrument),
+                        );
+
                         running_tasks.push(task_fut);
                     }
                 } else {

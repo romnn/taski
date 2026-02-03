@@ -215,7 +215,7 @@ async fn policy_hooks_fire_once_per_task_in_successful_run() -> eyre::Result<()>
         ready_queue: VecDeque::new(),
     };
 
-    let mut executor = PolicyExecutor::custom(schedule, policy);
+    let mut executor = PolicyExecutor::new(schedule, policy);
     let report = executor.run().await?;
 
     assert_eq!(report.total_tasks, 4);
@@ -438,7 +438,7 @@ async fn stalled_when_policy_never_schedules_anything() -> eyre::Result<()> {
     let mut schedule = Schedule::new(guard);
     let _input = schedule.add_input(1_u32);
 
-    let mut executor = PolicyExecutor::custom(schedule, NeverPolicy);
+    let mut executor = PolicyExecutor::new(schedule, NeverPolicy);
 
     let err = match executor.run().await {
         Ok(_report) => return Err(eyre::eyre!("expected stalled error")),

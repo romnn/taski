@@ -17,7 +17,6 @@ use std::hash::{Hash, Hasher};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::Instrument;
 
 fn summarize(s: &dyn std::fmt::Debug, max_length: usize) -> String {
     let s = format!("{s:?}");
@@ -488,39 +487,27 @@ where
         let label = self.to_string();
         let start = execution.started_at(idx).unwrap_or_else(Instant::now);
 
-        let task_name = self.task_name.clone();
-        let otel_name = format!("taski::{task_name}");
+        Some(Box::pin(async move {
+            log::debug!("running {label}");
 
-        Some(Box::pin(
-            async move {
-                log::debug!("running {label}");
+            // this will consume the task
+            let result = task.run(inputs).await;
 
-                // this will consume the task
-                let result = task.run(inputs).await;
+            let end = Instant::now();
 
-                let end = Instant::now();
+            let result = result
+                .map(|output| Box::new(output) as Box<dyn Any + Send>)
+                .map_err(Error::from);
 
-                let result = result
-                    .map(|output| Box::new(output) as Box<dyn Any + Send>)
-                    .map_err(Error::from);
-
-                let traced = crate::trace::Task {
-                    label,
-                    #[cfg(feature = "render")]
-                    color,
-                    start,
-                    end,
-                };
-                (idx, traced, result)
-            }
-            .instrument(tracing::trace_span!(
-                "taski.task",
-                task_index = idx.idx().index(),
-                task_name = %task_name,
-                {"perfetto.track_name"} = %task_name,
-                {"otel.name"} = %otel_name
-            )),
-        ))
+            let traced = crate::trace::Task {
+                label,
+                #[cfg(feature = "render")]
+                color,
+                start,
+                end,
+            };
+            (idx, traced, result)
+        }))
     }
 
     fn metadata(&self) -> &L {

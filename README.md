@@ -118,7 +118,7 @@ The executor is intentionally separate from the schedule.
 
 - `PolicyExecutor::fifo(schedule)` runs ready tasks in insertion order.
 - `PolicyExecutor::priority(schedule)` runs the task with the highest metadata first (requires `L: Ord`).
-- `PolicyExecutor::custom(schedule, policy)` runs with any custom policy implementation.
+- `PolicyExecutor::new(schedule, policy)` runs with any custom policy implementation.
 
 ### Policies
 

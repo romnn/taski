@@ -70,8 +70,23 @@ mod compile_fail_tests;
 mod tests {
     use super::*;
     use color_eyre::eyre;
-    use std::time::Duration;
+    use prelude::*;
     use tokio::time::sleep;
+
+    #[allow(unused_imports)]
+    pub mod prelude {
+        pub use googletest::{
+            assert_that,
+            fixtures::{ConsumableFixture as _, Fixture as _, FixtureOf, StaticFixture as _},
+            matcher::{Matcher as _, MatcherBase as _},
+            matchers::*,
+        };
+        pub use similar_asserts::assert_eq as sim_assert_eq;
+        pub use std::time::Duration;
+
+        pub const MILLISECOND: Duration = Duration::from_millis(1);
+        pub const SECOND: Duration = Duration::from_secs(1);
+    }
 
     #[cfg(feature = "render")]
     macro_rules! function_name {
@@ -315,7 +330,7 @@ mod tests {
         #[async_trait::async_trait]
         impl Task0<usize> for Download {
             async fn run(self: Box<Self>) -> TaskResult<usize> {
-                sleep(Duration::from_secs(1)).await;
+                sleep(1 * SECOND).await;
                 Ok(0)
             }
             fn name(&self) -> String {
@@ -333,7 +348,7 @@ mod tests {
         #[async_trait::async_trait]
         impl crate::task::Task1<usize, usize> for Process {
             async fn run(self: Box<Self>, _: usize) -> TaskResult<usize> {
-                sleep(Duration::from_secs(1)).await;
+                sleep(1 * SECOND).await;
                 Ok(0)
             }
             fn name(&self) -> String {
@@ -366,7 +381,7 @@ mod tests {
         let _p5 = graph.add_node_with_metadata(process.clone(), (d5,), Label::Process)?;
         let _p6 = graph.add_node_with_metadata(process.clone(), (d6,), Label::Process)?;
 
-        let mut executor = PolicyExecutor::custom(
+        let mut executor = PolicyExecutor::new(
             graph,
             CustomPolicy {
                 // max two concurrent downloads
@@ -397,7 +412,7 @@ mod tests {
         #[async_trait::async_trait]
         impl crate::task::Task1<String, String> for Identity {
             async fn run(self: Box<Self>, input: String) -> TaskResult<String> {
-                sleep(Duration::from_secs(1)).await;
+                sleep(1 * SECOND).await;
                 Ok(input)
             }
         }
@@ -454,14 +469,14 @@ mod tests {
 
         let slow = schedule.add_closure(
             || async {
-                futures_timer::Delay::new(Duration::from_millis(200)).await;
+                futures_timer::Delay::new(200 * MILLISECOND).await;
                 Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
             },
             (),
         )?;
 
         let mut executor = PolicyExecutor::fifo(schedule);
-        executor.set_task_timeout_handle(slow, Some(Duration::from_millis(10)));
+        executor.set_task_timeout_handle(slow, Some(10 * MILLISECOND));
         let report = executor.run().await?;
 
         assert_eq!(report.failed_tasks, 1);
@@ -477,21 +492,18 @@ mod tests {
 
         let _slow = schedule.add_closure(
             || async {
-                futures_timer::Delay::new(Duration::from_millis(200)).await;
+                futures_timer::Delay::new(200 * MILLISECOND).await;
                 Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
             },
             (),
         )?;
 
-        let mut executor = PolicyExecutor::fifo(schedule).timeout(Some(Duration::from_millis(10)));
-        let err = executor
-            .run()
-            .await
-            .err()
-            .ok_or_else(|| eyre::eyre!("expected error"))?;
-        match err {
-            executor::RunError::TimedOut { .. } => Ok(()),
-            other => Err(eyre::eyre!("unexpected error: {other}")),
-        }
+        let mut executor = PolicyExecutor::fifo(schedule).timeout(Some(10 * MILLISECOND));
+        let res = executor.run().await;
+        assert_that!(
+            res,
+            matches_pattern!(Err(matches_pattern!(executor::RunError::TimedOut { .. })))
+        );
+        Ok(())
     }
 }
