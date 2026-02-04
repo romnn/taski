@@ -26,7 +26,9 @@ jobs:
       - uses: romnn/cargo-feature-combinations@main
       - name: Install fontconfig
         if: runner.os == 'Linux'
-        run: sudo apt-get install libfontconfig1-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libfreetype6-dev libfontconfig1-dev
       - name: Test
         run: cargo fc test --all-targets
 
