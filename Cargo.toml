@@ -22,7 +22,7 @@ edition = "2024"
 
 [package]
 name = "taski"
-version = "0.0.5"
+version = "0.0.6"
 edition.workspace = true
 authors = ["romnn <contact@romnn.com>"]
 description = "async task DAG execution"
