@@ -5,6 +5,7 @@
 //! When the `render` feature is enabled, traces can also be rendered as SVG.
 
 use crate::dag;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{Level, Span};
 
@@ -250,12 +251,16 @@ impl<'id, L> MakeSpan<'id, L> for NoopMakeSpan {
 #[derive(Debug, Clone)]
 pub struct DefaultMakeSpan {
     level: Level,
+    perfetto_track_name: Option<Arc<str>>,
+    perfetto_slice_name_task_name: bool,
 }
 
 impl Default for DefaultMakeSpan {
     fn default() -> Self {
         Self {
             level: Level::TRACE,
+            perfetto_track_name: None,
+            perfetto_slice_name_task_name: false,
         }
     }
 }
@@ -271,6 +276,26 @@ impl DefaultMakeSpan {
         self.level = level;
         self
     }
+
+    #[must_use]
+    pub fn perfetto_track_name(mut self, track_name: impl Into<Arc<str>>) -> Self {
+        self.perfetto_track_name = Some(track_name.into());
+        self
+    }
+
+    pub fn set_perfetto_track_name(&mut self, track_name: Option<Arc<str>>) {
+        self.perfetto_track_name = track_name;
+    }
+
+    #[must_use]
+    pub fn perfetto_slice_name_task_name(mut self, enabled: bool) -> Self {
+        self.perfetto_slice_name_task_name = enabled;
+        self
+    }
+
+    pub fn set_perfetto_slice_name_task_name(&mut self, enabled: bool) {
+        self.perfetto_slice_name_task_name = enabled;
+    }
 }
 
 impl<'id, L> MakeSpan<'id, L> for DefaultMakeSpan
@@ -282,6 +307,8 @@ where
         let task_name = task.task_name();
         let otel_name = format!("taski::{task_name}");
 
+        let track_name = self.perfetto_track_name.as_deref().unwrap_or(task_name);
+
         macro_rules! make_span {
             ($level:expr) => {{
                 tracing::span!(
@@ -289,10 +316,34 @@ where
                     "taski.task",
                     task_index,
                     task_name = %task_name,
-                    {"perfetto.track_name"} = %task_name,
+                    {"perfetto.track_name"} = %track_name,
                     {"otel.name"} = %otel_name
                 )
             }};
+        }
+
+        macro_rules! make_span_with_slice_name {
+            ($level:expr) => {{
+                tracing::span!(
+                    $level,
+                    "taski.task",
+                    task_index,
+                    task_name = %task_name,
+                    {"perfetto.track_name"} = %track_name,
+                    {"perfetto.slice_name"} = %task_name,
+                    {"otel.name"} = %otel_name
+                )
+            }};
+        }
+
+        if self.perfetto_slice_name_task_name {
+            return match self.level {
+                Level::ERROR => make_span_with_slice_name!(Level::ERROR),
+                Level::WARN => make_span_with_slice_name!(Level::WARN),
+                Level::INFO => make_span_with_slice_name!(Level::INFO),
+                Level::DEBUG => make_span_with_slice_name!(Level::DEBUG),
+                Level::TRACE => make_span_with_slice_name!(Level::TRACE),
+            };
         }
 
         match self.level {
@@ -350,6 +401,10 @@ impl NoopTaskTraceLayer {
 }
 
 impl<M, S, R> TaskTraceLayer<M, S, R> {
+    pub fn make_span_mut(&mut self) -> &mut M {
+        &mut self.make_span
+    }
+
     #[must_use]
     pub fn make_span<M2>(self, make_span: M2) -> TaskTraceLayer<M2, S, R> {
         TaskTraceLayer {

@@ -103,7 +103,7 @@ where
 {
     /// Creates a new executor with a custom policy.
     #[must_use]
-    pub fn new(schedule: Schedule<'id, L>, policy: P) -> Self {
+    pub fn custom(schedule: Schedule<'id, L>, policy: P) -> Self {
         let schedule_id = schedule.schedule_id();
         let execution = Execution::new(schedule_id, schedule.dag.node_count());
         Self {
@@ -117,8 +117,22 @@ where
         }
     }
 
+    /// Alias for [`PolicyExecutor::custom`].
     #[must_use]
-    pub fn with_task_trace<TTrace>(self, task_trace: TTrace) -> PolicyExecutor<'id, P, L, TTrace> {
+    pub fn new(schedule: Schedule<'id, L>, policy: P) -> Self {
+        Self::custom(schedule, policy)
+    }
+}
+
+impl<'id, P, L, TTrace> PolicyExecutor<'id, P, L, TTrace>
+where
+    L: 'id,
+{
+    #[must_use]
+    pub fn with_task_trace<TTrace2>(
+        self,
+        task_trace: TTrace2,
+    ) -> PolicyExecutor<'id, P, L, TTrace2> {
         PolicyExecutor {
             schedule_id: self.schedule_id,
             schedule: self.schedule,
@@ -131,8 +145,17 @@ where
     }
 
     #[must_use]
-    pub fn with_trace<TTrace>(self, task_trace: TTrace) -> PolicyExecutor<'id, P, L, TTrace> {
+    pub fn with_trace<TTrace2>(self, task_trace: TTrace2) -> PolicyExecutor<'id, P, L, TTrace2> {
         self.with_task_trace(task_trace)
+    }
+
+    #[must_use]
+    pub fn task_trace(&self) -> &TTrace {
+        &self.task_trace
+    }
+
+    pub fn task_trace_mut(&mut self) -> &mut TTrace {
+        &mut self.task_trace
     }
 
     /// Sets an optional timeout for the entire execution.
@@ -307,18 +330,23 @@ where
 
                 running_task_ids.push(task_id);
 
-                if let Some(task_fut) = task.run(&self.execution) {
-                    let mut task_trace = self.task_trace.clone();
-                    let task_timeout = self.execution.task_timeout(task_id);
-                    let task_context = trace::TaskContext {
-                        task_id,
-                        task: Arc::clone(task),
-                        timeout: task_timeout,
-                    };
+                let mut task_trace = self.task_trace.clone();
+                let task_timeout = self.execution.task_timeout(task_id);
+                let task_context = trace::TaskContext {
+                    task_id,
+                    task: Arc::clone(task),
+                    timeout: task_timeout,
+                };
 
-                    let span = task_trace.make_span(&task_context);
-                    task_trace.on_start(&task_context, &span);
+                let span = task_trace.make_span(&task_context);
+                task_trace.on_start(&task_context, &span);
 
+                let task_fut = {
+                    let _enter = span.enter();
+                    task.run(&self.execution)
+                };
+
+                if let Some(task_fut) = task_fut {
                     if let Some(task_timeout) = task_timeout {
                         let label = task.to_string();
                         #[cfg(feature = "render")]
