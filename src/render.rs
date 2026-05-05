@@ -74,7 +74,7 @@ fn calculate_hash<T: std::hash::Hash>(t: T) -> u64 {
 #[cfg(feature = "render")]
 #[cfg_attr(docsrs, doc(cfg(feature = "render")))]
 pub fn color_from_id<I: std::hash::Hash>(id: I) -> Rgba {
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
     let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(calculate_hash(id));
     let hue = palette::RgbHue::from_degrees(rng.random_range(0.0..360.0));
     hue_to_rgb(hue).into()
