@@ -108,7 +108,8 @@ mod tests {
             let function_name = function_name
                 .strip_suffix("::{{closure}}")
                 .unwrap_or(function_name);
-            let test = format!("{}_{}", function_name, $suffix);
+            // `:` is not allowed in Windows file names, where the repository must still check out.
+            let test = format!("{}_{}", function_name.replace("::", "__"), $suffix);
             manifest_dir.join("src/tests/").join(test)
         }};
     }
